@@ -576,6 +576,76 @@ class OllamaBackend:
             "tool_calls": tool_calls,
         }
 
+    def chat_streaming(self, messages: list, tools: list, on_token=None) -> dict:
+        """Like chat() but streams text tokens via on_token(token: str) callback.
+
+        Tool calls are still returned in bulk at the end (Ollama limitation).
+        If on_token is None, falls back to non-streaming chat().
+        """
+        if on_token is None:
+            return self.chat(messages, tools)
+
+        clean_messages = [
+            {k: v for k, v in m.items() if k in ("role", "content", "tool_calls", "tool_call_id", "name")}
+            for m in messages
+        ]
+        for m in clean_messages:
+            if m.get("content") is None:
+                m["content"] = ""
+
+        ollama_tools = [
+            {"type": "function", "function": spec["function"]}
+            for spec in tools
+        ]
+
+        content_parts = []
+        tool_calls_raw = []
+
+        stream = _ollama_lib.chat(
+            model=self.model,
+            messages=clean_messages,
+            tools=ollama_tools,
+            stream=True,
+        )
+
+        for chunk in stream:
+            msg = getattr(chunk, "message", None) or (chunk.get("message", {}) if isinstance(chunk, dict) else {})
+
+            # Stream text token
+            token = getattr(msg, "content", None)
+            if token is None and isinstance(msg, dict):
+                token = msg.get("content")
+            if token:
+                content_parts.append(token)
+                on_token(token)
+
+            # Collect tool calls (usually in the final chunk)
+            raw_tcs = getattr(msg, "tool_calls", None)
+            if raw_tcs is None and isinstance(msg, dict):
+                raw_tcs = msg.get("tool_calls")
+            if raw_tcs:
+                tool_calls_raw.extend(raw_tcs)
+
+        # Parse tool calls
+        tool_calls = []
+        for i, tc in enumerate(tool_calls_raw):
+            fn_obj = getattr(tc, "function", None) or (tc.get("function", {}) if isinstance(tc, dict) else {})
+            fn_name = getattr(fn_obj, "name", None) or (fn_obj.get("name", "") if isinstance(fn_obj, dict) else "")
+            fn_args = getattr(fn_obj, "arguments", None)
+            if fn_args is None and isinstance(fn_obj, dict):
+                fn_args = fn_obj.get("arguments", {})
+            if isinstance(fn_args, str):
+                try:
+                    fn_args = json.loads(fn_args)
+                except Exception:
+                    fn_args = {}
+            tool_calls.append({"id": f"call_{i}", "name": fn_name, "arguments": fn_args or {}})
+
+        return {
+            "content": "".join(content_parts) or None,
+            "tool_calls": tool_calls,
+        }
+
 
 class GeminiBackend:
     """
@@ -810,9 +880,9 @@ class Agent:
 
         Event types pushed to the queue:
           {"type": "thinking"}
+          {"type": "token",       "token": str}   ← real-time text (Ollama only)
           {"type": "tool_call",   "name": str, "args": dict}
           {"type": "tool_result", "name": str, "result": str}
-          {"type": "interim",     "content": str}
           {"type": "done",        "content": str}
           {"type": "error",       "message": str}
         The caller must push None (sentinel) after this returns to close the stream.
@@ -821,11 +891,28 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
 
         final_text = ""
-        max_steps = 20
+        max_steps  = 20
+        # Check whether backend supports token-level streaming
+        supports_streaming = hasattr(self.backend, "chat_streaming")
 
         for step in range(max_steps):
             event_queue.put({"type": "thinking"})
-            response = self.backend.chat(self.messages, TOOL_SPECS)
+
+            if supports_streaming:
+                # Stream tokens in real-time; suppress "thinking" after first token
+                first_token_sent = [False]
+
+                def _on_token(tok):
+                    if not first_token_sent[0]:
+                        event_queue.put({"type": "streaming_start"})
+                        first_token_sent[0] = True
+                    event_queue.put({"type": "token", "token": tok})
+
+                response = self.backend.chat_streaming(
+                    self.messages, TOOL_SPECS, on_token=_on_token
+                )
+            else:
+                response = self.backend.chat(self.messages, TOOL_SPECS)
 
             content    = response.get("content") or ""
             tool_calls = response.get("tool_calls", [])

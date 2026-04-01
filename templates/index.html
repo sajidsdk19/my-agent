@@ -559,15 +559,33 @@ async function sendMessage(){
     // Open SSE stream
     const evtSource=new EventSource(`/api/stream/${stream_id}`);
     let toolIdx=0;
+    let streamingBubble=null;  // live text bubble during token streaming
+    let streamingText='';      // accumulates raw tokens for final markdown render
 
     evtSource.onmessage=e=>{
       const ev=JSON.parse(e.data);
 
       if(ev.type==='thinking'){
-        // already showing thinking row
+        // thinking row already visible
+      }
+      else if(ev.type==='streaming_start'){
+        // First token arrived — swap thinking dots for a live text bubble
+        if(thinkingRow){thinkingRow.remove();thinkingRow=null}
+        if(!assistantContent)assistantContent=createAssistantContainer();
+        streamingBubble=document.createElement('div');
+        streamingBubble.className='bubble';
+        streamingBubble.style.whiteSpace='pre-wrap';
+        assistantContent.append(streamingBubble);
+        streamingText='';
+        statusTxt.textContent='Streaming…';
+      }
+      else if(ev.type==='token'){
+        // Append token text in real-time
+        streamingText+=ev.token;
+        if(streamingBubble) streamingBubble.textContent=streamingText;
+        scrollBottom();
       }
       else if(ev.type==='tool_call'){
-        // Remove thinking row once we see real activity
         if(thinkingRow){thinkingRow.remove();thinkingRow=null}
         if(!assistantContent)assistantContent=createAssistantContainer();
         const card=createToolCard(ev.name,ev.args);
@@ -577,21 +595,25 @@ async function sendMessage(){
         scrollBottom();
       }
       else if(ev.type==='tool_result'){
-        // match last tool card
         const card=currentToolCards[toolIdx-1];
         if(card)updateToolCard(card,ev.result);
         scrollBottom();
       }
-      else if(ev.type==='interim'){
-        // assistant spoke between tool calls
-      }
       else if(ev.type==='done'){
         if(thinkingRow){thinkingRow.remove();thinkingRow=null}
         if(!assistantContent)assistantContent=createAssistantContainer();
-        const bubble=document.createElement('div');
-        bubble.className='bubble';
-        bubble.innerHTML=marked.parse(ev.content||'(no response)');
-        assistantContent.append(bubble);
+        const finalContent=ev.content||'(no response)';
+        if(streamingBubble){
+          // Replace raw-text streaming bubble with rendered markdown
+          streamingBubble.style.whiteSpace='';
+          streamingBubble.innerHTML=marked.parse(finalContent);
+          streamingBubble=null;
+        } else {
+          const bubble=document.createElement('div');
+          bubble.className='bubble';
+          bubble.innerHTML=marked.parse(finalContent);
+          assistantContent.append(bubble);
+        }
         scrollBottom();
         evtSource.close();
         setBusy(false);
