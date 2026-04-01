@@ -643,6 +643,23 @@ class CodeViewer(ctk.CTkFrame):
             if self._tabs:
                 self._switch_tab(next(iter(self._tabs)))
 
+    # ── Context API (used by ClawApp for Antigravity-style awareness)
+    def get_context(self) -> dict | None:
+        """Return open file path + full content for AI context injection."""
+        if not self._active:
+            return None
+        path = self._tabs[self._active]["path"]
+        content = self._code_box.get("1.0", "end-1c")
+        return {"path": path, "content": content}
+
+    def get_selection(self) -> str | None:
+        """Return currently selected text in the code editor, or None."""
+        try:
+            sel = self._code_box.get(tk.SEL_FIRST, tk.SEL_LAST)
+            return sel if sel.strip() else None
+        except tk.TclError:
+            return None
+
     # ── Action bar callbacks
     def _save_file(self):
         if not self._active:
@@ -1102,8 +1119,23 @@ class ClawApp(ctk.CTk):
         self.inp_frame.grid(row=2, column=0, sticky="ew")
         self.inp_frame.grid_columnconfigure(0, weight=1)
 
+        # Context hint bar (shows currently open file if any)
+        self._ctx_bar = ctk.CTkFrame(self.inp_frame, fg_color="transparent")
+        self._ctx_bar.grid(row=0, column=0, padx=16, pady=(10, 0), sticky="ew")
+        self._ctx_bar.grid_columnconfigure(1, weight=1)
+        self._ctx_file_lbl = ctk.CTkLabel(
+            self._ctx_bar, text="", font=("JetBrains Mono", 9),
+            text_color=ACCENT, anchor="w")
+        self._ctx_file_lbl.grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            self._ctx_bar, text="@ Add context", width=96, height=22,
+            font=("Inter", 9), fg_color=S3, hover_color=BORDER,
+            text_color=MUTED, corner_radius=5,
+            command=self._inject_context,
+        ).grid(row=0, column=1, sticky="e")
+
         box = ctk.CTkFrame(self.inp_frame, fg_color=S2, corner_radius=14)
-        box.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="ew", columnspan=2)
+        box.grid(row=1, column=0, padx=16, pady=(6, 6), sticky="ew", columnspan=2)
         box.grid_columnconfigure(0, weight=1)
 
         self.input_box = ctk.CTkTextbox(
@@ -1122,9 +1154,14 @@ class ClawApp(ctk.CTk):
         )
         self.send_btn.grid(row=0, column=1, padx=(0, 8), pady=6)
 
-        ctk.CTkLabel(self.inp_frame, text="Enter to send · Shift+Enter for new line",
+        ctk.CTkLabel(self.inp_frame,
+                     text="Enter to send · Shift+Enter for newline · Ctrl+L focus chat",
                      font=("Inter", 9), text_color=DIM
-                     ).grid(row=1, column=0, padx=20, pady=(0, 6), sticky="e", columnspan=2)
+                     ).grid(row=2, column=0, padx=20, pady=(0, 6), sticky="e", columnspan=2)
+
+        # Keyboard shortcuts
+        self.bind_all("<Control-l>", lambda e: self.input_box.focus_set())
+        self.bind_all("<Control-L>", lambda e: self.input_box.focus_set())
 
     # ── Model loading ─────────────────────────────────────────────────────────
     def _load_models(self):
@@ -1194,19 +1231,22 @@ class ClawApp(ctk.CTk):
         if not text:
             return
         self.input_box.delete("1.0", "end")
-        self.input_box.configure(height=48)   # reset height after send
+        self.input_box.configure(height=48)
         model = self.sidebar.model_var.get()
+
+        # Chat bubble shows the user's raw text, AI gets context-enriched version
         self.chat.append_user(text)
         self._set_busy(True)
+        ai_text = self._build_send_text(text)
 
         def run():
             try:
                 self._ensure_agent(model)
-                self.agent.run_turn_streaming(text, self.event_queue)
+                self.agent.run_turn_streaming(ai_text, self.event_queue)
             except Exception as exc:
                 self.event_queue.put({"type": "error", "message": str(exc)})
             finally:
-                self.event_queue.put(None)   # sentinel
+                self.event_queue.put(None)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1304,26 +1344,79 @@ class ClawApp(ctk.CTk):
 
     # ── IDE helpers ────────────────────────────────────────────────────────────────
     def _open_file(self, path: Path):
-        """Open a file in the code viewer (called by FileExplorer on click)."""
+        """Open a file in the code viewer. Updates context bar and agent CWD hint."""
         self.code_viewer.open_file(path)
+        # Update context bar
+        self._ctx_file_lbl.configure(text=f"📄 {path.name}  —  {path.parent}")
+        # Sync agent working dir so AI can read_file / write_file with relative paths
+        import agent as _agent_mod
+        _agent_mod.CWD = path.parent
+        self.sidebar.cwd_lbl.configure(text=str(path.parent))
+
+    def _inject_context(self):
+        """
+        '@' button: injects selected text (or full file) as a code block
+        into the chat input box so the user can ask questions about it.
+        """
+        ctx = self.code_viewer.get_context()
+        if not ctx:
+            self.chat.append_error("No file open in the editor.")
+            return
+        selection = self.code_viewer.get_selection()
+        snippet  = selection if selection else ctx["content"][:6000]
+        tag      = "selection" if selection else "file"
+        lang     = ctx["path"].suffix.lstrip(".")
+        block = (
+            f"\n\n[{tag}: {ctx['path'].name}]\n"
+            f"```{lang}\n{snippet}\n```\n"
+        )
+        # Append to whatever the user has already typed
+        cur = self.input_box.get("1.0", "end-1c")
+        self.input_box.delete("1.0", "end")
+        self.input_box.insert("1.0", cur + block)
+        self._auto_grow_input()
+        self.input_box.focus_set()
+
+    def _build_send_text(self, user_text: str) -> str:
+        """
+        Antigravity-style context injection:
+        If the user's message doesn't already have a code block and there
+        is an open file, silently prepend a compact file context header
+        so the AI always knows what's on screen.
+        """
+        if "```" in user_text:          # user already added context manually
+            return user_text
+        ctx = self.code_viewer.get_context()
+        if not ctx:
+            return user_text
+        path    = ctx["path"]
+        content = ctx["content"]
+        lang    = path.suffix.lstrip(".")
+        # Only attach first 200 lines to keep context compact
+        lines   = content.splitlines()[:200]
+        snippet = "\n".join(lines)
+        ellipsis = "\n... (truncated)" if len(content.splitlines()) > 200 else ""
+        header = (
+            f"[Currently open: `{path}`]\n"
+            f"```{lang}\n{snippet}{ellipsis}\n```\n\n"
+        )
+        return header + user_text
 
     def _review_file(self, path: Path, content: str):
         """Send a file-review request to the AI."""
         prompt = (
-            f"Please review the following file and list any bugs, "
-            f"issues, or improvements you can see.\n\n"
-            f"File: `{path}`\n\n"
+            f"Please review this file and list any bugs, issues, or improvements.\n\n"
+            f"File: `{path}`\n"
             f"```{path.suffix.lstrip('.')}\n{content[:8000]}\n```"
         )
         self._send_prompt(prompt)
 
     def _revamp_file(self, path: Path, content: str):
-        """Ask the AI to fully refactor / rewrite a file."""
+        """Ask the AI to refactor the file and write it back."""
         prompt = (
-            f"Please refactor and improve the following file. "
-            f"Show me the complete improved version and then use "
-            f"write_file to save it.\n\n"
-            f"File: `{path}`\n\n"
+            f"Please refactor and improve this file completely. "
+            f"Show the improved version then call write_file to save it.\n\n"
+            f"File: `{path}`\n"
             f"```{path.suffix.lstrip('.')}\n{content[:8000]}\n```"
         )
         self._send_prompt(prompt)
