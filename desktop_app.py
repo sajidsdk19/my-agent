@@ -424,8 +424,8 @@ class ClawApp(ctk.CTk):
             fg_color="transparent", border_width=0, wrap="word",
         )
         self.input_box.grid(row=0, column=0, padx=(14, 6), pady=6, sticky="ew")
-        self.input_box.bind("<Control-Return>", lambda e: self._send())
         self.input_box.bind("<Return>", self._on_enter)
+        self.input_box.bind("<Shift-Return>", lambda e: None)  # allow native newline insertion
 
         self.send_btn = ctk.CTkButton(
             box, text="➤", width=46, height=46, font=("Inter", 16, "bold"),
@@ -434,7 +434,7 @@ class ClawApp(ctk.CTk):
         )
         self.send_btn.grid(row=0, column=1, padx=(0, 8), pady=6)
 
-        ctk.CTkLabel(inp, text="Ctrl+Enter to send",
+        ctk.CTkLabel(inp, text="Enter to send · Shift+Enter for new line",
                      font=("Inter", 9), text_color=DIM
                      ).grid(row=1, column=0, padx=20, pady=(0, 6), sticky="e", columnspan=2)
 
@@ -451,7 +451,11 @@ class ClawApp(ctk.CTk):
         threading.Thread(target=fetch, daemon=True).start()
 
     def _on_model_change(self, model):
-        self.agent = None   # force recreate with new model
+        if self.agent:
+            # Preserve conversation history across model switches
+            self._old_messages = list(self.agent.messages)
+            self._old_turns = self.agent.turn_count
+        self.agent = None   # force recreate on next send
 
     def _ensure_agent(self, model):
         if self.agent is None:
@@ -460,12 +464,22 @@ class ClawApp(ctk.CTk):
             try:
                 backend = make_backend(model)
                 self.agent = Agent(backend=backend)
+                # Restore history if we just switched models
+                if hasattr(self, "_old_messages"):
+                    self.agent.messages = self._old_messages
+                    self.agent.turn_count = self._old_turns
+                    del self._old_messages
+                    del self._old_turns
             except SystemExit:
                 raise RuntimeError("Failed to start backend. Check Ollama is running.")
 
     # ── Send message ──────────────────────────────────────────────────────────
     def _on_enter(self, event):
-        return None   # allow plain Enter for newlines; Ctrl+Enter sends
+        # Allow Shift+Enter for newlines
+        if event.state & 0x0001:
+            return None
+        self._send()
+        return "break"
 
     def _send(self):
         if self.busy:
