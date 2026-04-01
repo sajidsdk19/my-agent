@@ -7,6 +7,7 @@ Run:  python desktop_app.py
 """
 import sys
 import os
+import re
 import threading
 import queue
 from pathlib import Path
@@ -430,19 +431,256 @@ class FileExplorer(ctk.CTkFrame):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Code Viewer
+#  Syntax Highlighter
 # ══════════════════════════════════════════════════════════════════════════════
+class SyntaxHighlighter:
+    """
+    Token-regex syntax highlighter for tk.Text.
+    Covers Python, JS/TS, C/C++/C#, Go, Rust, Java, HTML, CSS, JSON, Bash, Markdown.
+    Uses a Material Ocean-inspired dark palette to match the app theme.
+    """
+
+    # ── Material Ocean palette — matches the dark BG perfectly ───────────────
+    _C = {
+        "keyword":   "#c792ea",   # purple  — def class if for return
+        "keyword2":  "#89ddff",   # sky     — True None self and
+        "string":    "#c3e88d",   # lime    — \"string\" 'string'
+        "comment":   "#546e7a",   # slate   — # // /* */
+        "number":    "#f78c6c",   # orange  — 42  3.14  0xff
+        "function":  "#82aaff",   # blue    — fn definitions + calls
+        "class_":    "#ffcb6b",   # amber   — ClassName
+        "decorator": "#f07178",   # coral   — @decorator  #[attr]
+        "operator":  "#89ddff",   # sky     — = + - * / == !=
+        "builtin":   "#82aaff",   # blue    — print len range
+        "constant":  "#f78c6c",   # orange  — UPPER_CASE
+        "tag":       "#f07178",   # coral   — HTML <tag>
+        "attr":      "#c792ea",   # purple  — HTML attr=
+        "selector":  "#f07178",   # coral   — CSS .selector
+        "property":  "#82aaff",   # blue    — CSS property:
+        "key":       "#82aaff",   # blue    — JSON \"key\":
+        "heading":   "#ffcb6b",   # amber   — Markdown # heading
+        "bold":      "#c792ea",   # purple  — Markdown **bold**
+        "inlinecode":"#c3e88d",   # lime    — Markdown `code`
+    }
+
+    # ── Language pattern tables (tag, pattern [, extra_re_flags]) ────────
+    # Patterns are applied in ORDER — later patterns win over earlier ones.
+    # If a pattern contains group 1, only group 1 is coloured.
+    _LANG: dict = {
+        "python": [
+            ("string",   r'"""[\s\S]*?"""|\'\'\' [\s\S]*?\'\'\'', re.DOTALL),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' (?:\\.|[^\'\\])*\''),
+            ("comment",  r"#[^\n]*"),
+            ("decorator",r"@[\w.]+"),
+            ("keyword",  r"\b(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b"),
+            ("builtin",  r"\b(?:abs|all|any|bin|bool|bytes|callable|chr|classmethod|complex|dict|dir|divmod|enumerate|eval|exec|filter|float|format|frozenset|getattr|globals|hasattr|hash|hex|id|input|int|isinstance|issubclass|iter|len|list|locals|map|max|min|next|object|oct|open|ord|pow|print|property|range|repr|reversed|round|set|setattr|slice|sorted|staticmethod|str|sum|super|tuple|type|vars|zip)\b"),
+            ("class_",   r"\bclass\s+([A-Za-z_]\w*)"),
+            ("function", r"\bdef\s+([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("constant", r"\b[A-Z_][A-Z_\d]{2,}\b"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|0o[0-7]+|0b[01]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!]+|\.\.\.|\.\."),
+        ],
+        "js": [
+            ("string",   r"`[\s\S]*?`", re.DOTALL),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' (?:\\.|[^\'\\])*\''),
+            ("comment",  r"//[^\n]*"),
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("keyword",  r"\b(?:break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|function|if|import|in|instanceof|let|new|of|return|static|super|switch|this|throw|try|typeof|var|void|while|with|yield|async|await)\b"),
+            ("keyword2", r"\b(?:true|false|null|undefined|NaN|Infinity)\b"),
+            ("class_",   r"\bclass\s+([A-Za-z_]\w*)"),
+            ("function", r"\bfunction\s+([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("constant", r"\b[A-Z_][A-Z_\d]{2,}\b"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!?:]+|\.\.\.|\.\?\."),
+        ],
+        "cpp": [
+            ("comment",  r"//[^\n]*"),
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' (?:\\.|[^\'\\])*\''),
+            ("decorator",r"#\s*(?:include|define|ifdef|ifndef|endif|pragma|undef|if|else|elif)[^\n]*"),
+            ("decorator",r"\[[^\]]*\]"),   # C# [Attribute]
+            ("keyword",  r"\b(?:auto|break|case|catch|char|class|const|constexpr|continue|default|delete|do|double|else|enum|explicit|extern|false|float|for|friend|goto|if|inline|int|long|namespace|new|nullptr|operator|private|protected|public|return|short|signed|sizeof|static|struct|switch|template|this|throw|true|try|typedef|typename|union|unsigned|using|virtual|void|volatile|while)\b"),
+            ("keyword2", r"\b(?:abstract|var|string|bool|byte|decimal|delegate|dynamic|event|interface|internal|object|out|override|params|readonly|ref|sealed|typeof|var|async|await)\b"),
+            ("class_",   r"\b(?:class|struct|enum|interface)\s+([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("constant", r"\b[A-Z_][A-Z_\d]{2,}\b"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|\d+\.?\d*[fFdDuUlL]*)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!:?]+|::|->|=>"),
+        ],
+        "go": [
+            ("string",   r'`[\s\S]*?`', re.DOTALL),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' (?:\\.|[^\'\\])*\''),
+            ("comment",  r"//[^\n]*"),
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("keyword",  r"\b(?:break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var)\b"),
+            ("keyword2", r"\b(?:true|false|nil|iota)\b"),
+            ("builtin",  r"\b(?:append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)\b"),
+            ("class_",   r"\btype\s+([A-Za-z_]\w*)"),
+            ("function", r"\bfunc\s+(?:\([^)]*\)\s+)?([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!:]+|\.\.\."),
+        ],
+        "rs": [
+            ("string",   r'"(?:\\.|[^"\\])*"'),
+            ("comment",  r"//[^\n]*"),
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("decorator",r"#\[?[\s\S]*?\]"),
+            ("keyword",  r"\b(?:as|async|await|break|const|continue|crate|dyn|else|enum|extern|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|type|unsafe|use|where|while)\b"),
+            ("keyword2", r"\b(?:true|false|None|Some|Ok|Err)\b"),
+            ("class_",   r"\b(?:struct|enum|trait|impl)\s+([A-Za-z_]\w*)"),
+            ("function", r"\bfn\s+([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("constant", r"\b[A-Z_][A-Z_\d]{2,}\b"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|0o[0-7]+|0b[01]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!:?]+|->|=>|\.\.\.|\.\.\.\."),
+        ],
+        "java": [
+            ("comment",  r"//[^\n]*"),
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' (?:\\.|[^\'\\])*\''),
+            ("decorator",r"@[A-Za-z_]\w*"),
+            ("keyword",  r"\b(?:abstract|assert|break|case|catch|class|const|continue|default|do|else|enum|extends|final|finally|for|goto|if|implements|import|instanceof|interface|native|new|package|private|protected|public|return|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|var|void|volatile|while)\b"),
+            ("keyword2", r"\b(?:true|false|null)\b"),
+            ("builtin",  r"\b(?:boolean|byte|char|double|float|int|long|short|String|Object|System|Math|Arrays|List|Map|Set|ArrayList|HashMap)\b"),
+            ("class_",   r"\b(?:class|interface|enum)\s+([A-Za-z_]\w*)"),
+            ("function", r"\b([A-Za-z_]\w*)\s*(?=\()"),
+            ("number",   r"\b(?:0x[\da-fA-F]+|\d+\.?\d*[fFdDlL]?)\b"),
+            ("operator", r"[+\-*/%&|^~<>=!:?]+|::"),
+        ],
+        "html": [
+            ("comment",  r"<!--[\s\S]*?-->", re.DOTALL),
+            ("string",   r'"[^"]*"|\' [^\']*\''),
+            ("tag",      r"</?\.?([A-Za-z][\w.-]*)"),
+            ("attr",     r"\b([A-Za-z_][\w:.-]*)\s*(?==)"),
+        ],
+        "css": [
+            ("comment",  r"/\*[\s\S]*?\*/", re.DOTALL),
+            ("string",   r'"[^"]*"|\' [^\']*\''),
+            ("selector", r"[.#][\w-]+|::{1,2}[\w-]+|:\w[\w-]*(?!\s*[^{,])|\.\w+"),
+            ("property", r"  [\w-]+(?=\s*:)"),
+            ("keyword",  r"\b(?:auto|none|inherit|initial|unset|flex|grid|block|inline|absolute|relative|fixed|sticky|center|left|right|top|bottom|solid|dotted|dashed|transparent|important)\b"),
+            ("number",   r"\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|deg|s|ms|fr)?\b"),
+        ],
+        "json": [
+            ("key",      r'"([^"\\]|\\.)*?"(?=\s*:)'),
+            ("string",   r'"(?:[^"\\]|\\.)*"'),
+            ("number",   r"\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b"),
+            ("keyword2", r"\b(?:true|false|null)\b"),
+        ],
+        "bash": [
+            ("comment",  r"#[^\n]*"),
+            ("string",   r'"(?:\\.|[^"\\])*"|\' [^\']*\''),
+            ("keyword",  r"\b(?:if|then|else|elif|fi|for|do|done|while|until|case|esac|function|return|exit|break|continue|local|export|source|readonly|declare|unset|shift|trap)\b"),
+            ("builtin",  r"\b(?:echo|printf|read|cd|ls|pwd|mkdir|rm|cp|mv|cat|grep|sed|awk|find|curl|wget|chmod|chown|sudo|apt|pip|python|python3|node|npm|git|docker)\b"),
+            ("decorator",r"\$\{?[A-Za-z_]\w*\}?"),   # $VAR
+            ("number",   r"\b\d+\b"),
+            ("operator",  r"[|&;<>!]+|&&|\|\|"),
+        ],
+        "markdown": [
+            ("heading",    r"^#{1,6}\s+.+$"),
+            ("bold",       r"\*\*[\s\S]*?\*\*|__[\s\S]*?__"),
+            ("comment",    r"<!--[\s\S]*?-->", re.DOTALL),
+            ("inlinecode", r"`[^`]+`"),
+            ("string",     r"```[\s\S]*?```", re.DOTALL),
+            ("decorator",  r"^\s*[-*+]\s"),
+            ("number",     r"^\s*\d+\.\s"),
+            ("function",   r"\[[^\]]+\]\([^)]+\)"),   # [link](url)
+        ],
+    }
+    # Aliases
+    _ALIASES = {
+        "jsx": "js", "tsx": "js", "ts": "js",
+        "c": "cpp", "h": "cpp", "hpp": "cpp", "cc": "cpp", "cxx": "cpp", "cs": "cpp",
+        "sh": "bash", "bat": "bash", "zsh": "bash", "fish": "bash",
+        "yml": "json",  # close enough for structure
+        "toml": "json",
+        "vue": "html",
+    }
+    # Tags with font styling
+    _FONT_TAGS = {
+        "comment":   ("JetBrains Mono", 11, "italic"),
+        "keyword":   ("JetBrains Mono", 11, "bold"),
+        "class_":    ("JetBrains Mono", 11, "bold"),
+        "heading":   ("JetBrains Mono", 12, "bold"),
+        "bold":      ("JetBrains Mono", 11, "bold"),
+    }
+
+    def __init__(self, text_widget: tk.Text):
+        self.text = text_widget
+        self._hl_after_id = None
+        self._configure_tags()
+
+    def _configure_tags(self):
+        t = self.text
+        for tag, color in self._C.items():
+            font = self._FONT_TAGS.get(tag, ("JetBrains Mono", 11))
+            t.tag_configure(tag, foreground=color, font=font)
+        # Ensure hl tags are below selection highlight
+        for tag in self._C:
+            t.tag_lower(tag, "sel")
+
+    def apply(self, lang: str):
+        """Apply highlighting for the given file extension. Clears previous highlights."""
+        lang = lang.lower().lstrip(".")
+        lang = self._ALIASES.get(lang, lang)
+        patterns = self._LANG.get(lang, [])
+        if not patterns:
+            return
+
+        content = self.text.get("1.0", "end-1c")
+        if len(content) > 150_000:          # skip huge files for performance
+            return
+
+        # Clear all previous tag ranges
+        for tag in self._C:
+            self.text.tag_remove(tag, "1.0", "end")
+
+        for entry in patterns:
+            tag, pattern = entry[0], entry[1]
+            extra_flags  = entry[2] if len(entry) > 2 else 0
+            flags        = re.MULTILINE | extra_flags
+            try:
+                for m in re.finditer(pattern, content, flags):
+                    # Use group 1 if available (e.g. capture just the name)
+                    if m.lastindex and m.lastindex >= 1:
+                        s, e = m.start(1), m.end(1)
+                    else:
+                        s, e = m.start(), m.end()
+                    self.text.tag_add(tag,
+                                      self._idx(content, s),
+                                      self._idx(content, e))
+            except re.error:
+                pass
+
+    def schedule(self, lang: str, delay_ms: int = 300):
+        """Debounced highlight — cancels any pending call and reschedules."""
+        if self._hl_after_id:
+            self.text.after_cancel(self._hl_after_id)
+        self._hl_after_id = self.text.after(delay_ms, lambda: self.apply(lang))
+
+    @staticmethod
+    def _idx(content: str, char_pos: int) -> str:
+        """Convert char offset → Tkinter 'line.col' index."""
+        before = content[:char_pos]
+        line   = before.count("\n") + 1
+        col    = char_pos - (before.rfind("\n") + 1)
+        return f"{line}.{col}"
+
+
 class CodeViewer(ctk.CTkFrame):
-    """Tabbed code viewer with line numbers, Save, AI Review and Revamp."""
+    """Tabbed code viewer with line numbers, syntax highlighting, Save, AI Review and Revamp."""
 
     def __init__(self, master, on_review, on_revamp, **kw):
         super().__init__(master, fg_color=BG, corner_radius=0, **kw)
-        self.on_review = on_review   # callback(path, content)
+        self.on_review = on_review
         self.on_revamp = on_revamp
-        # tabs: {path_str: {"path": Path, "modified": bool}}
         self._tabs: dict[str, dict] = {}
         self._active: str | None = None
         self._build()
+        # Highlighter is wired in _build after the text widget exists
 
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
@@ -503,6 +741,9 @@ class CodeViewer(ctk.CTkFrame):
         self._code_box.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self._code_box.bind("<<Modified>>", self._on_edit)
 
+        # Syntax highlighter — initialise now that the Text widget exists
+        self._highlighter = SyntaxHighlighter(self._code_box)
+
         # Action bar
         action = ctk.CTkFrame(self, fg_color=S2, corner_radius=0, height=44)
         action.grid(row=2, column=0, sticky="ew")
@@ -562,6 +803,10 @@ class CodeViewer(ctk.CTkFrame):
             self._modified_lbl.configure(text="● unsaved")
             self._code_box.edit_modified(False)
             self._update_line_numbers()
+            # Debounced highlight — 300 ms after last keystroke
+            if self._active:
+                lang = self._tabs[self._active]["path"].suffix
+                self._highlighter.schedule(lang, delay_ms=300)
 
     # ── Open file
     def open_file(self, path: Path):
@@ -590,6 +835,8 @@ class CodeViewer(ctk.CTkFrame):
             self._tabs[self._active]["modified"] = False
         self._modified_lbl.configure(text="")
         self._update_line_numbers()
+        # Apply syntax highlighting immediately
+        self._highlighter.apply(path.suffix)
 
     # ── Tab management
     def _add_tab_btn(self, key: str, name: str):
