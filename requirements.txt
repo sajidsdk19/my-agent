@@ -1,0 +1,5 @@
+ollama>=0.6.0
+google-genai>=1.0.0
+rich>=13.7.0
+duckduckgo-search>=6.2.0
+requests>=2.31.0
