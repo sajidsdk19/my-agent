@@ -805,6 +805,66 @@ class Agent:
 
         return final_text
 
+    def run_turn_streaming(self, user_input: str, event_queue) -> str:
+        """Run one agentic turn, pushing SSE event dicts into event_queue.
+
+        Event types pushed to the queue:
+          {"type": "thinking"}
+          {"type": "tool_call",   "name": str, "args": dict}
+          {"type": "tool_result", "name": str, "result": str}
+          {"type": "interim",     "content": str}
+          {"type": "done",        "content": str}
+          {"type": "error",       "message": str}
+        The caller must push None (sentinel) after this returns to close the stream.
+        """
+        self.turn_count += 1
+        self.messages.append({"role": "user", "content": user_input})
+
+        final_text = ""
+        max_steps = 20
+
+        for step in range(max_steps):
+            event_queue.put({"type": "thinking"})
+            response = self.backend.chat(self.messages, TOOL_SPECS)
+
+            content    = response.get("content") or ""
+            tool_calls = response.get("tool_calls", [])
+
+            self.messages.append({
+                "role":       "assistant",
+                "content":    content,
+                "tool_calls": tool_calls,
+            })
+
+            if not tool_calls:
+                final_text = content
+                event_queue.put({"type": "done", "content": content})
+                break
+
+            for tc in tool_calls:
+                name = tc["name"]
+                args = tc["arguments"]
+                event_queue.put({"type": "tool_call", "name": name, "args": args})
+
+                result  = execute_tool(name, args)
+                display = result if len(result) <= 3000 else result[:3000] + "\n…[truncated]"
+                event_queue.put({"type": "tool_result", "name": name, "result": display})
+
+                self.messages.append({
+                    "role":         "tool",
+                    "content":      result,
+                    "tool_call_id": tc.get("id", ""),
+                    "name":         name,
+                })
+
+            if content:
+                event_queue.put({"type": "interim", "content": content})
+        else:
+            final_text = "[agent] Reached max steps without completing."
+            event_queue.put({"type": "error", "message": final_text})
+
+        return final_text
+
     def save_session(self):
         path = SESSION_DIR / f"{self.session_id}.json"
         data = {

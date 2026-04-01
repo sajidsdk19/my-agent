@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Claw Agent — AI Coding Assistant</title>
+<meta name="description" content="Claw Agent: local AI coding assistant powered by Ollama or Gemini."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+:root{
+  --bg:#09090f;--surface:#111318;--s2:#181b24;--s3:#1f2330;
+  --border:rgba(255,255,255,.07);--border2:rgba(255,255,255,.13);
+  --text:#dde1ee;--muted:#7a7f9a;--dim:#3f4460;
+  --accent:#9d70ff;--accent-d:rgba(157,112,255,.15);
+  --cyan:#3dd6f5;--cyan-d:rgba(61,214,245,.12);
+  --green:#56d17b;--green-d:rgba(86,209,123,.12);
+  --yellow:#f0a742;--yellow-d:rgba(240,167,66,.12);
+  --red:#ff5f57;--red-d:rgba(255,95,87,.12);
+  --r:10px;--rl:16px;--sidebar:264px;
+  --font:'Inter',system-ui,sans-serif;--mono:'JetBrains Mono',monospace;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden}
+
+/* ── Layout ── */
+.app{display:flex;height:100vh;overflow:hidden}
+
+/* ── Sidebar ── */
+.sidebar{
+  width:var(--sidebar);min-width:var(--sidebar);
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:18px 14px;gap:18px;overflow-y:auto;
+}
+.sidebar::-webkit-scrollbar{width:3px}
+.sidebar::-webkit-scrollbar-thumb{background:var(--s3);border-radius:2px}
+
+.logo{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.logo-icon{
+  width:34px;height:34px;border-radius:9px;flex-shrink:0;
+  background:linear-gradient(135deg,var(--accent),var(--cyan));
+  display:flex;align-items:center;justify-content:center;font-size:17px;
+}
+.logo-title{font-size:14px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.logo-sub{font-size:10px;color:var(--muted);margin-top:1px}
+
+.sec-label{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+
+select.model-sel{
+  width:100%;background:var(--s2);border:1px solid var(--border);color:var(--text);
+  padding:8px 30px 8px 11px;border-radius:var(--r);font-family:var(--font);font-size:12.5px;
+  cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237a7f9a' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 9px center;transition:all .2s;
+}
+select.model-sel:hover{border-color:var(--border2);background-color:var(--s3)}
+select.model-sel:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-d)}
+select.model-sel option{background:#1a1d26}
+
+.badge{
+  display:inline-flex;align-items:center;gap:4px;font-size:10.5px;
+  padding:3px 8px;border-radius:20px;border:1px solid var(--border);background:var(--s2);color:var(--muted);
+}
+.badge.free{color:var(--green);border-color:rgba(86,209,123,.3);background:var(--green-d)}
+.badge.cloud{color:var(--cyan);border-color:rgba(61,214,245,.3);background:var(--cyan-d)}
+
+.btn{
+  display:flex;align-items:center;gap:7px;padding:7px 11px;
+  border-radius:var(--r);font-family:var(--font);font-size:12.5px;font-weight:500;
+  cursor:pointer;border:1px solid var(--border);background:var(--s2);color:var(--text);
+  transition:all .18s;width:100%;
+}
+.btn:hover{background:var(--s3);border-color:var(--border2)}
+.btn.danger:hover{background:var(--red-d);border-color:rgba(255,95,87,.3);color:var(--red)}
+.btn.primary{background:var(--accent-d);border-color:rgba(157,112,255,.3);color:var(--accent)}
+.btn.primary:hover{background:rgba(157,112,255,.25)}
+
+.stat-box{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:11px;display:flex;flex-direction:column;gap:7px}
+.stat-row{display:flex;justify-content:space-between;font-size:11.5px}
+.stat-k{color:var(--muted)}.stat-v{color:var(--text);font-weight:500;font-family:var(--mono);font-size:11px}
+
+.cwd{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:7px 9px;font-size:10.5px;font-family:var(--mono);color:var(--muted);word-break:break-all}
+
+.sidebar-spacer{flex:1}
+.sidebar-footer{font-size:10.5px;color:var(--dim);text-align:center;padding-top:10px;border-top:1px solid var(--border)}
+
+/* ── Main ── */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+.chat-header{
+  padding:13px 22px;border-bottom:1px solid var(--border);
+  background:var(--surface);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
+}
+.chat-title{font-size:14px;font-weight:600}
+.chat-sub{font-size:11px;color:var(--muted);margin-top:1px}
+.hdr-right{display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 7px var(--green)}
+.dot.busy{background:var(--yellow);box-shadow:0 0 7px var(--yellow);animation:pulse 1s infinite}
+.dot.off{background:var(--dim);box-shadow:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ── Messages ── */
+.messages{flex:1;overflow-y:auto;padding:22px;display:flex;flex-direction:column;gap:18px;scroll-behavior:smooth}
+.messages::-webkit-scrollbar{width:5px}
+.messages::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px}
+
+/* Welcome */
+.welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;padding:40px;gap:14px}
+.welcome-icon{width:68px;height:68px;border-radius:18px;background:linear-gradient(135deg,var(--accent-d),var(--cyan-d));border:1px solid rgba(157,112,255,.2);display:flex;align-items:center;justify-content:center;font-size:32px}
+.welcome h2{font-size:21px;font-weight:700;background:linear-gradient(135deg,var(--text),var(--muted));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.welcome p{font-size:13px;color:var(--muted);max-width:400px;line-height:1.65}
+.chips{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:6px}
+.chip{padding:6px 13px;border-radius:20px;font-size:12px;border:1px solid var(--border);background:var(--s2);color:var(--muted);cursor:pointer;transition:all .18s}
+.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-d)}
+
+/* Rows */
+.msg-row{display:flex;gap:11px;animation:fadeUp .28s ease forwards}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.msg-row.user{flex-direction:row-reverse}
+.avatar{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;margin-top:2px}
+.msg-row.user .avatar{background:linear-gradient(135deg,var(--accent),#c05cff)}
+.msg-row.assistant .avatar{background:linear-gradient(135deg,var(--s2),var(--s3));border:1px solid var(--border)}
+.msg-content{max-width:74%;display:flex;flex-direction:column;gap:7px}
+.bubble{padding:11px 15px;border-radius:var(--rl);font-size:13.5px;line-height:1.65}
+.msg-row.user .bubble{background:linear-gradient(135deg,rgba(157,112,255,.18),rgba(61,214,245,.1));border:1px solid rgba(157,112,255,.22);border-top-right-radius:3px}
+.msg-row.assistant .bubble{background:var(--s2);border:1px solid var(--border);border-top-left-radius:3px}
+
+/* Markdown inside bubbles */
+.bubble h1,.bubble h2,.bubble h3{margin:10px 0 5px;font-weight:600}
+.bubble h1{font-size:17px}.bubble h2{font-size:15px}.bubble h3{font-size:13px;color:var(--accent)}
+.bubble p{margin:5px 0}.bubble ul,.bubble ol{margin:5px 0 5px 18px}.bubble li{margin:2px 0}
+.bubble code{font-family:var(--mono);font-size:11.5px;background:var(--s3);padding:1px 4px;border-radius:4px;color:var(--cyan)}
+.bubble pre{margin:8px 0;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);position:relative}
+.bubble pre code{background:none;padding:0;color:inherit;font-size:11.5px}
+.bubble blockquote{border-left:3px solid var(--accent);padding-left:11px;margin:7px 0;color:var(--muted)}
+.bubble a{color:var(--cyan)}.bubble strong{color:var(--text);font-weight:600}
+.bubble table{border-collapse:collapse;width:100%;font-size:12px;margin:7px 0}
+.bubble th,.bubble td{border:1px solid var(--border);padding:5px 9px;text-align:left}
+.bubble th{background:var(--s3);color:var(--muted);font-weight:600}
+.code-header{display:flex;justify-content:space-between;align-items:center;padding:5px 11px;background:#1d2433;border-bottom:1px solid var(--border);font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.copy-btn{padding:1px 7px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:9.5px;cursor:pointer;font-family:var(--font);transition:all .18s}
+.copy-btn:hover{color:var(--text)}.copy-btn.ok{color:var(--green);border-color:rgba(86,209,123,.4)}
+
+/* Tool cards */
+.tool-card{border-radius:var(--r);border:1px solid var(--border);overflow:hidden;font-size:12.5px;animation:fadeUp .22s ease forwards}
+.tool-card[data-tool="bash"]{border-color:rgba(240,167,66,.3)}
+.tool-card[data-tool="read_file"]{border-color:rgba(61,214,245,.25)}
+.tool-card[data-tool="write_file"]{border-color:rgba(86,209,123,.25)}
+.tool-card[data-tool="edit_file"]{border-color:rgba(157,112,255,.25)}
+.tool-card[data-tool="web_search"]{border-color:rgba(61,214,245,.3)}
+.tool-card[data-tool="grep_search"],.tool-card[data-tool="glob_search"]{border-color:rgba(157,112,255,.2)}
+.tool-card[data-tool="list_dir"]{border-color:rgba(240,167,66,.2)}
+.tool-hdr{display:flex;align-items:center;gap:7px;padding:7px 11px;cursor:pointer;background:var(--s2);transition:background .18s;user-select:none}
+.tool-hdr:hover{background:var(--s3)}
+.tool-icon{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.tool-card[data-tool="bash"] .tool-icon{background:var(--yellow-d)}
+.tool-card[data-tool="read_file"] .tool-icon{background:var(--cyan-d)}
+.tool-card[data-tool="write_file"] .tool-icon{background:var(--green-d)}
+.tool-card[data-tool="edit_file"] .tool-icon{background:var(--accent-d)}
+.tool-card[data-tool="web_search"] .tool-icon{background:var(--cyan-d)}
+.tool-card[data-tool="grep_search"] .tool-icon,.tool-card[data-tool="glob_search"] .tool-icon,.tool-card[data-tool="list_dir"] .tool-icon{background:var(--accent-d)}
+.tool-name-lbl{font-weight:600;font-family:var(--mono);font-size:11.5px}
+.tool-preview{font-family:var(--mono);font-size:10.5px;color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-chevron{font-size:10px;color:var(--dim);margin-left:auto;transition:transform .2s}
+.tool-card.open .tool-chevron{transform:rotate(180deg)}
+.status-pill{padding:2px 6px;border-radius:9px;font-size:9.5px;font-weight:700;flex-shrink:0}
+.status-pill.running{background:var(--yellow-d);color:var(--yellow);animation:pulse 1s infinite}
+.status-pill.done{background:var(--green-d);color:var(--green)}
+.status-pill.error{background:var(--red-d);color:var(--red)}
+.tool-body{display:none;border-top:1px solid var(--border)}
+.tool-card.open .tool-body{display:block}
+.tool-sec{padding:9px 11px}
+.tool-sec+.tool-sec{border-top:1px solid var(--border)}
+.tool-sec-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:5px}
+.tool-pre{font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:180px;overflow-y:auto;line-height:1.5}
+.tool-pre::-webkit-scrollbar{width:3px}
+.tool-pre::-webkit-scrollbar-thumb{background:var(--s3);border-radius:2px}
+
+/* Thinking */
+.thinking-row{display:flex;align-items:center;gap:11px;animation:fadeUp .28s ease forwards}
+.thinking-bubble{display:flex;align-items:center;gap:5px;padding:9px 13px;background:var(--s2);border:1px solid var(--border);border-radius:var(--rl);border-top-left-radius:3px}
+.dot-pulse{width:6px;height:6px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite ease-in-out}
+.dot-pulse:nth-child(2){animation-delay:.2s}.dot-pulse:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);background:var(--dim)}30%{transform:translateY(-5px);background:var(--accent)}}
+
+/* Input */
+.input-area{padding:14px 22px 18px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
+.input-box{background:var(--s2);border:1px solid var(--border);border-radius:var(--rl);display:flex;align-items:flex-end;gap:7px;padding:7px 7px 7px 14px;transition:all .2s}
+.input-box:focus-within{border-color:rgba(157,112,255,.4);box-shadow:0 0 0 3px var(--accent-d)}
+#chat-input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--font);font-size:13.5px;resize:none;min-height:22px;max-height:150px;overflow-y:auto;line-height:1.55;padding:3px 0}
+#chat-input::placeholder{color:var(--dim)}
+#chat-input::-webkit-scrollbar{width:3px}
+#chat-input::-webkit-scrollbar-thumb{background:var(--s3);border-radius:2px}
+.send-btn{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#be5cff);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .18s;flex-shrink:0}
+.send-btn:hover{transform:scale(1.06);filter:brightness(1.15)}.send-btn:active{transform:scale(.94)}
+.send-btn:disabled{opacity:.4;cursor:not-allowed;transform:none;filter:none}
+.input-hint{font-size:10.5px;color:var(--dim);margin-top:5px;text-align:right}
+
+/* Toast */
+.toast-wrap{position:fixed;bottom:90px;right:22px;display:flex;flex-direction:column;gap:7px;z-index:999}
+.toast{padding:9px 14px;border-radius:var(--r);font-size:12.5px;font-weight:500;backdrop-filter:blur(12px);animation:slideIn .28s ease;box-shadow:0 4px 18px rgba(0,0,0,.4)}
+.toast.ok{background:var(--green-d);border:1px solid rgba(86,209,123,.35);color:var(--green)}
+.toast.err{background:var(--red-d);border:1px solid rgba(255,95,87,.35);color:var(--red)}
+.toast.inf{background:var(--accent-d);border:1px solid rgba(157,112,255,.35);color:var(--accent)}
+@keyframes slideIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
+
+/* No-model warning */
+.no-model-warn{background:var(--yellow-d);border:1px solid rgba(240,167,66,.3);border-radius:var(--r);padding:8px 12px;font-size:11.5px;color:var(--yellow);line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">🦞</div>
+      <div>
+        <div class="logo-title">Claw Agent</div>
+        <div class="logo-sub">AI Coding Assistant</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-label">Model</div>
+      <select class="model-sel" id="model-select">
+        <option value="">Loading models…</option>
+      </select>
+      <div style="margin-top:6px" id="model-badge-wrap"></div>
+    </div>
+
+    <div id="no-model-warn" class="no-model-warn" style="display:none">
+      ⚠️ No models found. Start Ollama and pull a model:<br>
+      <code style="font-size:10px">ollama pull qwen2.5-coder:7b</code>
+    </div>
+
+    <div>
+      <div class="sec-label">Session</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn" id="btn-save">💾 Save session</button>
+        <button class="btn danger" id="btn-clear">🗑 Clear conversation</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-label">Status</div>
+      <div class="stat-box" id="stat-box">
+        <div class="stat-row"><span class="stat-k">Model</span><span class="stat-v" id="s-model">—</span></div>
+        <div class="stat-row"><span class="stat-k">Turns</span><span class="stat-v" id="s-turns">0</span></div>
+        <div class="stat-row"><span class="stat-k">Messages</span><span class="stat-v" id="s-msgs">0</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-label">Working Directory</div>
+      <div class="cwd" id="s-cwd">—</div>
+    </div>
+
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-footer">Built on Claw Code architecture</div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <div class="main">
+    <div class="chat-header">
+      <div>
+        <div class="chat-title">🦞 Claw Agent</div>
+        <div class="chat-sub" id="hdr-sub">Ready</div>
+      </div>
+      <div class="hdr-right">
+        <div class="dot off" id="status-dot"></div>
+        <span style="font-size:11.5px;color:var(--muted)" id="status-txt">Idle</span>
+      </div>
+    </div>
+
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">🦞</div>
+        <h2>Hello! I'm Claw</h2>
+        <p>Your local AI coding assistant. I can read &amp; write files, run shell commands, search your code, and browse the web.</p>
+        <div class="chips">
+          <div class="chip" onclick="setInput('List all files in the current directory')">📁 List files</div>
+          <div class="chip" onclick="setInput('Read the agent.py file and explain how it works')">📖 Explain agent.py</div>
+          <div class="chip" onclick="setInput('Search the web for Python best practices 2024')">🌐 Web search</div>
+          <div class="chip" onclick="setInput('Run a quick system info command')">💻 System info</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-box">
+        <textarea id="chat-input" rows="1" placeholder="Ask Claw anything… (Ctrl+Enter to send)"></textarea>
+        <button class="send-btn" id="send-btn" title="Send (Ctrl+Enter)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+      <div class="input-hint">Ctrl+Enter to send · /help for commands</div>
+    </div>
+  </div>
+
+</div>
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script>
+/* ── Config ── */
+const TOOL_ICONS = {
+  bash:'💻', read_file:'📖', write_file:'📝', edit_file:'✏️',
+  list_dir:'📁', glob_search:'🔎', grep_search:'🔍', web_search:'🌐'
+};
+
+/* ── State ── */
+let busy = false;
+let currentModel = null;
+
+/* ── DOM ── */
+const messagesEl  = document.getElementById('messages');
+const inputEl     = document.getElementById('chat-input');
+const sendBtn     = document.getElementById('send-btn');
+const welcomeEl   = document.getElementById('welcome');
+const statusDot   = document.getElementById('status-dot');
+const statusTxt   = document.getElementById('status-txt');
+const hdrSub      = document.getElementById('hdr-sub');
+const modelSelect = document.getElementById('model-select');
+
+/* ── Marked config ── */
+marked.setOptions({
+  highlight:(code,lang)=>{
+    if(lang && hljs.getLanguage(lang)){
+      try{return hljs.highlight(code,{language:lang}).value}catch(e){}
+    }
+    return hljs.highlightAuto(code).value;
+  },
+  breaks:true, gfm:true
+});
+
+/* Custom renderer for code blocks with copy button */
+const renderer = new marked.Renderer();
+renderer.code = (code,lang)=>{
+  const hl = (lang&&hljs.getLanguage(lang))
+    ? hljs.highlight(code,{language:lang}).value
+    : hljs.highlightAuto(code).value;
+  const id = 'cb_'+Math.random().toString(36).slice(2);
+  return `<pre><div class="code-header"><span>${lang||'code'}</span><button class="copy-btn" onclick="copyCode('${id}',this)">Copy</button></div><code id="${id}" class="hljs">${hl}</code></pre>`;
+};
+marked.use({renderer});
+
+/* ── Load models on boot ── */
+async function loadModels(){
+  try{
+    const r = await fetch('/api/models');
+    const {models} = await r.json();
+    modelSelect.innerHTML='';
+    if(!models.length){
+      document.getElementById('no-model-warn').style.display='block';
+      modelSelect.innerHTML='<option value="">No models available</option>';
+      return;
+    }
+    models.forEach(m=>{
+      const opt=document.createElement('option');
+      opt.value=m.id; opt.textContent=m.name;
+      modelSelect.appendChild(opt);
+    });
+    currentModel = models[0].id;
+    updateModelBadge(models[0]);
+    refreshStatus();
+  }catch(e){
+    toast('Failed to load models','err');
+  }
+}
+
+function updateModelBadge(m){
+  const wrap=document.getElementById('model-badge-wrap');
+  if(!m){wrap.innerHTML='';return}
+  const cls = m.free?'free':'cloud';
+  const label = m.free?'🟢 Local · Free':'☁️ Cloud';
+  wrap.innerHTML=`<span class="badge ${cls}">${label}</span>`;
+}
+
+modelSelect.addEventListener('change',()=>{
+  currentModel=modelSelect.value;
+  const opt=[...modelSelect.options].find(o=>o.value===modelSelect.value);
+  const isFree=!currentModel.startsWith('gemini');
+  updateModelBadge({free:isFree});
+  refreshStatus();
+});
+
+/* ── Status refresh ── */
+async function refreshStatus(){
+  try{
+    const r=await fetch('/api/status');
+    const d=await r.json();
+    document.getElementById('s-model').textContent=d.model||'—';
+    document.getElementById('s-turns').textContent=d.turns||0;
+    document.getElementById('s-msgs').textContent=d.messages||0;
+    document.getElementById('s-cwd').textContent=d.cwd||'—';
+    hdrSub.textContent=d.model?`Using ${d.model}`:'Select a model';
+  }catch(e){}
+}
+
+/* ── Set busy state ── */
+function setBusy(b){
+  busy=b;
+  sendBtn.disabled=b;
+  statusDot.className='dot'+(b?' busy':'');
+  statusTxt.textContent=b?'Thinking…':'Idle';
+}
+
+/* ── Helpers ── */
+function scrollBottom(){
+  messagesEl.scrollTop=messagesEl.scrollHeight;
+}
+
+function setInput(t){inputEl.value=t;inputEl.focus();autoResize()}
+
+function autoResize(){
+  inputEl.style.height='auto';
+  inputEl.style.height=Math.min(inputEl.scrollHeight,150)+'px';
+}
+inputEl.addEventListener('input',autoResize);
+
+function copyCode(id,btn){
+  const el=document.getElementById(id);
+  if(!el)return;
+  navigator.clipboard.writeText(el.textContent).then(()=>{
+    btn.textContent='Copied!';btn.classList.add('ok');
+    setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('ok')},2000);
+  });
+}
+
+function toast(msg,type='inf',dur=3000){
+  const t=document.createElement('div');
+  t.className=`toast ${type}`;t.textContent=msg;
+  document.getElementById('toast-wrap').append(t);
+  setTimeout(()=>t.remove(),dur);
+}
+
+/* ── Append a user message bubble ── */
+function appendUser(text){
+  if(welcomeEl)welcomeEl.remove();
+  const row=document.createElement('div');
+  row.className='msg-row user';
+  row.innerHTML=`
+    <div class="avatar">👤</div>
+    <div class="msg-content"><div class="bubble">${escHtml(text)}</div></div>`;
+  messagesEl.append(row);
+  scrollBottom();
+}
+
+/* ── Create assistant message container ── */
+function createAssistantContainer(){
+  if(welcomeEl)welcomeEl.remove();
+  const row=document.createElement('div');
+  row.className='msg-row assistant';
+  const content=document.createElement('div');
+  content.className='msg-content';
+  row.innerHTML=`<div class="avatar">🦞</div>`;
+  row.append(content);
+  messagesEl.append(row);
+  scrollBottom();
+  return content;
+}
+
+/* ── Thinking row ── */
+function createThinkingRow(){
+  const row=document.createElement('div');
+  row.className='thinking-row';
+  row.innerHTML=`
+    <div class="avatar" style="background:linear-gradient(135deg,var(--s2),var(--s3));border:1px solid var(--border)">🦞</div>
+    <div class="thinking-bubble">
+      <div class="dot-pulse"></div><div class="dot-pulse"></div><div class="dot-pulse"></div>
+      <span style="font-size:11.5px;color:var(--muted);margin-left:5px">Thinking…</span>
+    </div>`;
+  messagesEl.append(row);
+  scrollBottom();
+  return row;
+}
+
+/* ── Tool card ── */
+function createToolCard(name, args){
+  const card=document.createElement('div');
+  card.className='tool-card';
+  card.setAttribute('data-tool',name);
+  const icon=TOOL_ICONS[name]||'🔧';
+  const preview=getToolPreview(name,args);
+  card.innerHTML=`
+    <div class="tool-hdr" onclick="toggleCard(this.parentElement)">
+      <div class="tool-icon">${icon}</div>
+      <span class="tool-name-lbl">${name}</span>
+      <span class="tool-preview">${escHtml(preview)}</span>
+      <span class="status-pill running">Running</span>
+      <span class="tool-chevron">▼</span>
+    </div>
+    <div class="tool-body">
+      <div class="tool-sec">
+        <div class="tool-sec-lbl">Arguments</div>
+        <div class="tool-pre">${escHtml(JSON.stringify(args,null,2))}</div>
+      </div>
+      <div class="tool-sec result-sec" style="display:none">
+        <div class="tool-sec-lbl">Result</div>
+        <div class="tool-pre result-pre"></div>
+      </div>
+    </div>`;
+  return card;
+}
+
+function updateToolCard(card, result){
+  const pill=card.querySelector('.status-pill');
+  pill.className='status-pill done';pill.textContent='Done';
+  const sec=card.querySelector('.result-sec');
+  sec.style.display='block';
+  card.querySelector('.result-pre').textContent=result;
+}
+
+function toggleCard(card){
+  card.classList.toggle('open');
+}
+
+function getToolPreview(name,args){
+  if(name==='bash')return args.command||'';
+  if(name==='read_file'||name==='write_file'||name==='edit_file')return args.path||'';
+  if(name==='web_search')return args.query||'';
+  if(name==='grep_search')return args.pattern||'';
+  if(name==='glob_search')return args.pattern||'';
+  if(name==='list_dir')return args.path||'.';
+  return JSON.stringify(args).slice(0,40);
+}
+
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ── Send a message ── */
+async function sendMessage(){
+  const text=inputEl.value.trim();
+  if(!text||busy)return;
+
+  appendUser(text);
+  inputEl.value='';autoResize();
+  setBusy(true);
+
+  // Start a thinking indicator
+  let thinkingRow=createThinkingRow();
+  let assistantContent=null;
+  let currentToolCards={}; // tool_call index → card el
+
+  try{
+    // POST /api/chat → get stream_id
+    const res=await fetch('/api/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:text,model:currentModel})
+    });
+    const {stream_id,error}=await res.json();
+    if(error){throw new Error(error)}
+
+    // Open SSE stream
+    const evtSource=new EventSource(`/api/stream/${stream_id}`);
+    let toolIdx=0;
+
+    evtSource.onmessage=e=>{
+      const ev=JSON.parse(e.data);
+
+      if(ev.type==='thinking'){
+        // already showing thinking row
+      }
+      else if(ev.type==='tool_call'){
+        // Remove thinking row once we see real activity
+        if(thinkingRow){thinkingRow.remove();thinkingRow=null}
+        if(!assistantContent)assistantContent=createAssistantContainer();
+        const card=createToolCard(ev.name,ev.args);
+        assistantContent.append(card);
+        currentToolCards[toolIdx]=card;
+        toolIdx++;
+        scrollBottom();
+      }
+      else if(ev.type==='tool_result'){
+        // match last tool card
+        const card=currentToolCards[toolIdx-1];
+        if(card)updateToolCard(card,ev.result);
+        scrollBottom();
+      }
+      else if(ev.type==='interim'){
+        // assistant spoke between tool calls
+      }
+      else if(ev.type==='done'){
+        if(thinkingRow){thinkingRow.remove();thinkingRow=null}
+        if(!assistantContent)assistantContent=createAssistantContainer();
+        const bubble=document.createElement('div');
+        bubble.className='bubble';
+        bubble.innerHTML=marked.parse(ev.content||'(no response)');
+        assistantContent.append(bubble);
+        scrollBottom();
+        evtSource.close();
+        setBusy(false);
+        refreshStatus();
+      }
+      else if(ev.type==='error'){
+        if(thinkingRow){thinkingRow.remove();thinkingRow=null}
+        toast('Agent error: '+ev.message,'err',5000);
+        evtSource.close();
+        setBusy(false);
+      }
+      else if(ev.type==='stream_end'){
+        evtSource.close();
+        setBusy(false);
+        refreshStatus();
+      }
+    };
+
+    evtSource.onerror=()=>{
+      evtSource.close();
+      if(thinkingRow)thinkingRow.remove();
+      toast('Stream disconnected','err');
+      setBusy(false);
+    };
+
+  }catch(err){
+    if(thinkingRow)thinkingRow.remove();
+    toast('Error: '+err.message,'err',5000);
+    setBusy(false);
+  }
+}
+
+/* ── Input key handler ── */
+inputEl.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&e.ctrlKey){e.preventDefault();sendMessage()}
+});
+sendBtn.addEventListener('click',sendMessage);
+
+/* ── Session buttons ── */
+document.getElementById('btn-clear').addEventListener('click',async()=>{
+  if(!confirm('Clear conversation history?'))return;
+  await fetch('/api/session/clear',{method:'POST'});
+  messagesEl.innerHTML='';
+  const w=document.createElement('div');
+  w.className='welcome';w.id='welcome';
+  w.innerHTML=`<div class="welcome-icon">🦞</div><h2>Hello! I'm Claw</h2><p>Conversation cleared. What can I help you with?</p>`;
+  messagesEl.append(w);
+  refreshStatus();
+  toast('Conversation cleared','inf');
+});
+
+document.getElementById('btn-save').addEventListener('click',async()=>{
+  const r=await fetch('/api/session/save',{method:'POST'});
+  const d=await r.json();
+  if(d.ok)toast('Saved → '+d.path,'ok',4000);
+  else toast(d.error||'Save failed','err');
+});
+
+/* ── Boot ── */
+loadModels();
+inputEl.focus();
+</script>
+</body>
+</html>
