@@ -521,15 +521,29 @@ class OllamaBackend:
             "tool_calls": [{"name": str, "arguments": dict, "id": str}],
           }
         """
-        # Filter out unsupported keys Ollama doesn't understand
-        clean_messages = [
-            {k: v for k, v in m.items() if k in ("role", "content", "tool_calls", "tool_call_id", "name")}
-            for m in messages
-        ]
-        # Remove None/empty content
-        for m in clean_messages:
-            if m.get("content") is None:
-                m["content"] = ""
+        # Filter out unsupported keys and rewrite tool_calls to Ollama's
+        # expected OpenAI wire format: {id, type, function:{name, arguments}}
+        clean_messages = []
+        for m in messages:
+            cm = {k: v for k, v in m.items()
+                  if k in ("role", "content", "tool_calls", "tool_call_id", "name")}
+            if cm.get("content") is None:
+                cm["content"] = ""
+            # Reformat tool_calls from our flat {id,name,arguments} to Ollama's
+            # nested {id, type, function:{name,arguments}} structure
+            if cm.get("tool_calls"):
+                cm["tool_calls"] = [
+                    {
+                        "id":       tc.get("id", ""),
+                        "type":     "function",
+                        "function": {
+                            "name":      tc["name"],
+                            "arguments": tc.get("arguments", {}),
+                        },
+                    }
+                    for tc in cm["tool_calls"]
+                ]
+            clean_messages.append(cm)
 
         ollama_tools = [
             {"type": "function", "function": spec["function"]}
@@ -585,13 +599,25 @@ class OllamaBackend:
         if on_token is None:
             return self.chat(messages, tools)
 
-        clean_messages = [
-            {k: v for k, v in m.items() if k in ("role", "content", "tool_calls", "tool_call_id", "name")}
-            for m in messages
-        ]
-        for m in clean_messages:
-            if m.get("content") is None:
-                m["content"] = ""
+        clean_messages = []
+        for m in messages:
+            cm = {k: v for k, v in m.items()
+                  if k in ("role", "content", "tool_calls", "tool_call_id", "name")}
+            if cm.get("content") is None:
+                cm["content"] = ""
+            if cm.get("tool_calls"):
+                cm["tool_calls"] = [
+                    {
+                        "id":       tc.get("id", ""),
+                        "type":     "function",
+                        "function": {
+                            "name":      tc["name"],
+                            "arguments": tc.get("arguments", {}),
+                        },
+                    }
+                    for tc in cm["tool_calls"]
+                ]
+            clean_messages.append(cm)
 
         ollama_tools = [
             {"type": "function", "function": spec["function"]}

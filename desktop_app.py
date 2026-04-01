@@ -10,6 +10,7 @@ import os
 import threading
 import queue
 from pathlib import Path
+import tkinter.font as tkfont
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -53,10 +54,11 @@ TOOL_ICONS = {
 #  Sidebar
 # ══════════════════════════════════════════════════════════════════════════════
 class Sidebar(ctk.CTkFrame):
-    def __init__(self, master, on_model_change, on_clear, on_save, **kw):
+    def __init__(self, master, on_model_change, on_clear, on_save, on_refresh, **kw):
         super().__init__(master, width=260, fg_color=SURF, corner_radius=0, **kw)
         self.grid_propagate(False)
         self.on_model_change = on_model_change
+        self.on_refresh = on_refresh
 
         r = 0
 
@@ -72,14 +74,29 @@ class Sidebar(ctk.CTkFrame):
 
         # Model
         self._section_label("MODEL", r); r += 1
+
+        # Model row: dropdown + refresh button side by side
+        model_row = ctk.CTkFrame(self, fg_color="transparent")
+        model_row.grid(row=r, column=0, padx=14, pady=(0, 4), sticky="ew"); r += 1
+        model_row.grid_columnconfigure(0, weight=1)
+
         self.model_var = ctk.StringVar(value="Loading…")
         self.model_menu = ctk.CTkOptionMenu(
-            self, variable=self.model_var, values=["Loading…"],
+            model_row, variable=self.model_var, values=["Loading…"],
             fg_color=S2, button_color=S3, button_hover_color=BORDER,
-            text_color=TEXT, font=F_SMALL, width=232,
+            text_color=TEXT, font=F_SMALL,
             command=self._model_changed,
         )
-        self.model_menu.grid(row=r, column=0, padx=14, pady=(0, 4), sticky="ew"); r += 1
+        self.model_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        self.refresh_btn = ctk.CTkButton(
+            model_row, text="🔄", width=34, height=28,
+            fg_color=S3, hover_color=BORDER, text_color=TEXT,
+            font=("Inter", 13), corner_radius=7,
+            command=self.refresh_models,
+        )
+        self.refresh_btn.grid(row=0, column=1, sticky="e")
+
         self.badge = ctk.CTkLabel(self, text="", font=F_SMALL, text_color=GREEN)
         self.badge.grid(row=r, column=0, padx=16, pady=(0, 12), sticky="w"); r += 1
 
@@ -135,7 +152,9 @@ class Sidebar(ctk.CTkFrame):
         lbl.grid(row=row, column=1, padx=12, pady=(5, 2), sticky="e")
         return lbl
 
-    def set_models(self, models):
+    def set_models(self, models, *, keep_selection=False):
+        """Update the model dropdown. If keep_selection is True, preserve current choice."""
+        current = self.model_var.get()
         if not models:
             self.model_menu.configure(values=["No models found"])
             self.model_var.set("No models found")
@@ -143,8 +162,19 @@ class Sidebar(ctk.CTkFrame):
                                  text_color=YELLOW)
             return
         self.model_menu.configure(values=models)
-        self.model_var.set(models[0])
-        self._model_changed(models[0])
+        # Keep existing selection if still available after refresh
+        if keep_selection and current in models:
+            self.model_var.set(current)
+            self._model_changed(current)
+        else:
+            self.model_var.set(models[0])
+            self._model_changed(models[0])
+
+    def refresh_models(self, keep_selection=True):
+        """Trigger a live re-query of Ollama models."""
+        self.refresh_btn.configure(text="⏳", state="disabled")
+        self.on_refresh(keep_selection=keep_selection,
+                        done_cb=lambda: self.refresh_btn.configure(text="🔄", state="normal"))
 
     def _model_changed(self, model):
         is_free = "gemini" not in model
@@ -162,22 +192,156 @@ class Sidebar(ctk.CTkFrame):
         if agent:
             self.s_model.configure(text=agent.backend.name.split("/")[-1][:22])
             self.s_turns.configure(text=str(agent.turn_count))
+        elif agent is None and not hasattr(self, '_model_manually_set'):
+            # If no agent yet, show dash only if we haven't manually set it already
+            pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TextMeasurer  —  pretext concept ported to Python/Tkinter
+#  prepare()  : one-time pass — segments text & caches each word's pixel width
+#               using Tkinter's own font engine (same ground-truth as rendering)
+#  layout()   : pure arithmetic — counts visual lines at any max_width,
+#               returns exact pixel height. Zero DOM/widget touches.
+# ══════════════════════════════════════════════════════════════════════════════
+class TextMeasurer:
+    """Port of the pretext text-measurement technique for Tkinter."""
+
+    _font_cache: dict = {}   # (family, size) -> tkfont.Font
+
+    @classmethod
+    def _get_font(cls, family: str, size: int) -> tkfont.Font:
+        key = (family, size)
+        if key not in cls._font_cache:
+            cls._font_cache[key] = tkfont.Font(family=family, size=size)
+        return cls._font_cache[key]
+
+    @classmethod
+    def prepare(cls, text: str, family: str = "Inter", size: int = 13) -> dict:
+        """
+        One-time measurement pass (analogous to pretext's prepare()).
+        Splits text on hard newlines, then on spaces, and measures every
+        word's pixel width once.  Returns an opaque dict for layout().
+        """
+        fnt        = cls._get_font(family, size)
+        space_w    = fnt.measure(" ")
+        line_h     = fnt.metrics("linespace")
+        hard_lines = text.split("\n")
+
+        lines_data = []
+        for hard_line in hard_lines:
+            words = hard_line.split(" ") if hard_line else []
+            lines_data.append(
+                [(w, fnt.measure(w)) for w in words]
+            )
+
+        return {"lines": lines_data, "space_w": space_w, "line_h": line_h}
+
+    @classmethod
+    def layout(cls, prepared: dict, max_width: int,
+               pad_v: int = 20) -> int:
+        """
+        Pure-arithmetic layout pass (analogous to pretext's layout()).
+        Counts visual lines by walking cached word widths — no widgets,
+        no reflow.  Returns the exact pixel height for a bubble.
+        """
+        sw       = prepared["space_w"]
+        lh       = prepared["line_h"]
+        max_width = max(max_width, 40)   # guard against tiny widths
+
+        visual_lines = 0
+        for words in prepared["lines"]:
+            visual_lines += 1            # every hard line = at least 1 visual row
+            cur_x = 0
+            for i, (_w, px) in enumerate(words):
+                if i == 0:
+                    cur_x = px
+                else:
+                    if cur_x + sw + px > max_width:
+                        visual_lines += 1
+                        cur_x = px
+                    else:
+                        cur_x += sw + px
+
+        if visual_lines == 0:
+            visual_lines = 1
+
+        return visual_lines * lh + pad_v
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Chat Area
 # ══════════════════════════════════════════════════════════════════════════════
 class ChatArea(ctk.CTkScrollableFrame):
+    # Horizontal padding subtracted from chat width to get text render width
+    _BUBBLE_H_PAD = 60    # 20px outer padx each side + ~20px inner textbox pad
+    _TEXT_PAD_V   = 24    # top+bottom textbox internal padding (px)
+    _TEXT_PAD_H   = 28    # left+right textbox internal padding (px)
+
     def __init__(self, master, **kw):
         super().__init__(master, fg_color=BG, corner_radius=0, **kw)
         self.grid_columnconfigure(0, weight=1)
         self._row = 0
         self._thinking_widget = None
         self._thinking_lbl    = None
-        self._streaming_lbl   = None
+        self._streaming_box   = None   # CTkTextbox for streaming
+        self._streaming_prep  = None   # prepared text for streaming bubble
         self._streaming_text  = ""
         self._anim_step       = 0
+        # Registry: list of (CTkTextbox, prepared_dict) for live height updates
+        self._bubble_registry: list[tuple] = []
         self._show_welcome()
+        self.bind("<Configure>", self._on_resize)
+
+    # ── Resize handler — recompute every bubble height+width (pure arithmetic) ───
+    def _on_resize(self, event=None):
+        chat_w = self.winfo_width()
+        if chat_w < 100:
+            return
+        text_w = self._calc_text_width(chat_w)
+        box_w  = text_w + self._TEXT_PAD_H
+        for box, prep in self._bubble_registry:
+            try:
+                if box.winfo_exists():
+                    h = TextMeasurer.layout(prep, text_w, pad_v=self._TEXT_PAD_V)
+                    box.configure(height=h, width=box_w)
+            except Exception:
+                pass
+
+    def _calc_text_width(self, chat_w: int | None = None) -> int:
+        """Text render width inside a bubble given the current chat area width."""
+        if chat_w is None:
+            chat_w = self.winfo_width()
+        if chat_w < 100:
+            chat_w = 900   # safe fallback before first layout pass
+        return max(80, chat_w - self._BUBBLE_H_PAD - self._TEXT_PAD_H)
+
+    def _bubble_text_width(self) -> int:
+        return self._calc_text_width()
+
+    def _make_bubble_box(self, parent, text: str,
+                         fg: str, text_color: str) -> ctk.CTkTextbox:
+        """
+        Create a CTkTextbox whose height AND width are pixel-perfect via
+        TextMeasurer.  Width is set explicitly so the rendered box always
+        matches the width assumption used for height calculation.
+        """
+        prep   = TextMeasurer.prepare(text, family="Inter", size=13)
+        text_w = self._bubble_text_width()
+        h      = TextMeasurer.layout(prep, text_w, pad_v=self._TEXT_PAD_V)
+        box_w  = text_w + self._TEXT_PAD_H
+
+        box = ctk.CTkTextbox(
+            parent, height=h, width=box_w,
+            font=F_BODY, text_color=text_color,
+            fg_color=fg, border_width=0,
+            corner_radius=12, wrap="word",
+            activate_scrollbars=False,
+        )
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        self._bubble_registry.append((box, prep))
+        return box
 
     # ── Welcome ──────────────────────────────────────────────────────────────
     def _show_welcome(self):
@@ -211,14 +375,9 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(wrap, text="You", font=("Inter", 10, "bold"),
                      text_color=ACCENT).grid(row=0, column=0, sticky="e", padx=(0, 6))
-        h = min(max(text.count("\n") * 22 + 46, 46), 220)
-        box = ctk.CTkTextbox(wrap, height=h, font=F_BODY, text_color=TEXT,
-                             fg_color="#1a1030", border_width=1,
-                             border_color="#4a3880", corner_radius=12,
-                             wrap="word", activate_scrollbars=False)
-        box.insert("1.0", text)
-        box.configure(state="disabled")
-        box.grid(row=1, column=0, sticky="e", ipadx=4, ipady=2)
+        box = self._make_bubble_box(wrap, text,
+                                    fg="#1a1030", text_color=TEXT)
+        box.grid(row=1, column=0, sticky="e")
         self._scroll_bottom()
 
     # ── Thinking row ─────────────────────────────────────────────────────────
@@ -264,24 +423,49 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(wrap, text="Claw", font=("Inter", 10, "bold"),
                      text_color="#7a5ccc").grid(row=0, column=0, sticky="w", padx=(4, 0))
-        self._streaming_lbl = ctk.CTkLabel(
-            wrap, text="", font=F_BODY, text_color=TEXT,
-            fg_color=S2, corner_radius=12, wraplength=680,
-            justify="left", padx=14, pady=10, anchor="w",
+        # Start with correct width + single-line height; grows token by token
+        text_w = self._bubble_text_width()
+        self._streaming_box = ctk.CTkTextbox(
+            wrap, height=40, width=text_w + self._TEXT_PAD_H,
+            font=F_BODY, text_color=TEXT,
+            fg_color=S2, border_width=0,
+            corner_radius=12, wrap="word",
+            activate_scrollbars=False,
         )
-        self._streaming_lbl.grid(row=1, column=0, sticky="w")
-        self._streaming_text = ""
+        self._streaming_box.grid(row=1, column=0, sticky="ew")
+        self._streaming_prep  = None
+        self._streaming_text  = ""
 
     def append_token(self, tok):
         self._streaming_text += tok
-        if self._streaming_lbl and self._streaming_lbl.winfo_exists():
-            self._streaming_lbl.configure(text=self._streaming_text)
+        if self._streaming_box and self._streaming_box.winfo_exists():
+            box = self._streaming_box
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", self._streaming_text)
+            box.configure(state="disabled")
+            # Recompute height+width on every token using TextMeasurer
+            prep   = TextMeasurer.prepare(self._streaming_text, "Inter", 13)
+            text_w = self._bubble_text_width()
+            h      = TextMeasurer.layout(prep, text_w, pad_v=self._TEXT_PAD_V)
+            box.configure(height=h, width=text_w + self._TEXT_PAD_H)
         self._scroll_bottom()
 
     def finalize_streaming(self, full_text):
-        if self._streaming_lbl and self._streaming_lbl.winfo_exists():
-            self._streaming_lbl.configure(text=full_text)
-        self._streaming_lbl = None
+        if self._streaming_box and self._streaming_box.winfo_exists():
+            box  = self._streaming_box
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", full_text)
+            box.configure(state="disabled")
+            # Final precise height+width + register for future resizes
+            prep   = TextMeasurer.prepare(full_text, "Inter", 13)
+            text_w = self._bubble_text_width()
+            h      = TextMeasurer.layout(prep, text_w, pad_v=self._TEXT_PAD_V)
+            box.configure(height=h, width=text_w + self._TEXT_PAD_H)
+            self._bubble_registry.append((box, prep))
+        self._streaming_box  = None
+        self._streaming_prep = None
         self._streaming_text = ""
         self._scroll_bottom()
 
@@ -293,10 +477,8 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(wrap, text="Claw", font=("Inter", 10, "bold"),
                      text_color="#7a5ccc").grid(row=0, column=0, sticky="w", padx=(4, 0))
-        lbl = ctk.CTkLabel(wrap, text=text, font=F_BODY, text_color=TEXT,
-                           fg_color=S2, corner_radius=12, wraplength=680,
-                           justify="left", padx=14, pady=10, anchor="w")
-        lbl.grid(row=1, column=0, sticky="w")
+        box = self._make_bubble_box(wrap, text, fg=S2, text_color=TEXT)
+        box.grid(row=1, column=0, sticky="ew")
         self._scroll_bottom()
 
     # ── Tool card ─────────────────────────────────────────────────────────────
@@ -328,20 +510,24 @@ class ChatArea(ctk.CTkScrollableFrame):
     # ── Error bubble ─────────────────────────────────────────────────────────
     def append_error(self, msg):
         self.remove_thinking()
-        lbl = ctk.CTkLabel(self, text=f"❌  {msg}", font=F_BODY,
-                           text_color=RED, fg_color="#1a0808",
-                           corner_radius=8, padx=14, pady=9,
-                           wraplength=680, justify="left", anchor="w")
-        lbl.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 8))
+        full = f"❌  {msg}"
+        wrap = ctk.CTkFrame(self, fg_color="transparent")
+        wrap.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 8))
+        wrap.grid_columnconfigure(0, weight=1)
+        box = self._make_bubble_box(wrap, full, fg="#1a0808", text_color=RED)
+        box.grid(row=0, column=0, sticky="ew")
         self._scroll_bottom()
 
     def clear(self):
         for w in self.winfo_children():
             w.destroy()
-        self._row = 0
+        self._row            = 0
         self._thinking_widget = None
         self._thinking_lbl    = None
-        self._streaming_lbl   = None
+        self._streaming_box   = None
+        self._streaming_prep  = None
+        self._streaming_text  = ""
+        self._bubble_registry = []
         self._show_welcome()
 
     @staticmethod
@@ -385,6 +571,7 @@ class ClawApp(ctk.CTk):
             on_model_change=self._on_model_change,
             on_clear=self._clear_chat,
             on_save=self._save_session,
+            on_refresh=self._refresh_models,
         )
         self.sidebar.grid(row=0, column=0, sticky="nsew")
 
@@ -409,13 +596,12 @@ class ClawApp(ctk.CTk):
         self.chat = ChatArea(right)
         self.chat.grid(row=1, column=0, sticky="nsew")
 
-        # Input area
-        inp = ctk.CTkFrame(right, fg_color=SURF, height=88, corner_radius=0)
-        inp.grid(row=2, column=0, sticky="ew")
-        inp.grid_columnconfigure(0, weight=1)
-        inp.grid_propagate(False)
+        # Input area — auto-grows with content
+        self.inp_frame = ctk.CTkFrame(right, fg_color=SURF, corner_radius=0)
+        self.inp_frame.grid(row=2, column=0, sticky="ew")
+        self.inp_frame.grid_columnconfigure(0, weight=1)
 
-        box = ctk.CTkFrame(inp, fg_color=S2, corner_radius=14)
+        box = ctk.CTkFrame(self.inp_frame, fg_color=S2, corner_radius=14)
         box.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="ew", columnspan=2)
         box.grid_columnconfigure(0, weight=1)
 
@@ -425,7 +611,8 @@ class ClawApp(ctk.CTk):
         )
         self.input_box.grid(row=0, column=0, padx=(14, 6), pady=6, sticky="ew")
         self.input_box.bind("<Return>", self._on_enter)
-        self.input_box.bind("<Shift-Return>", lambda e: None)  # allow native newline insertion
+        self.input_box.bind("<Shift-Return>", lambda e: None)  # allow native newline
+        self.input_box.bind("<KeyRelease>", self._auto_grow_input)
 
         self.send_btn = ctk.CTkButton(
             box, text="➤", width=46, height=46, font=("Inter", 16, "bold"),
@@ -434,12 +621,18 @@ class ClawApp(ctk.CTk):
         )
         self.send_btn.grid(row=0, column=1, padx=(0, 8), pady=6)
 
-        ctk.CTkLabel(inp, text="Enter to send · Shift+Enter for new line",
+        ctk.CTkLabel(self.inp_frame, text="Enter to send · Shift+Enter for new line",
                      font=("Inter", 9), text_color=DIM
                      ).grid(row=1, column=0, padx=20, pady=(0, 6), sticky="e", columnspan=2)
 
     # ── Model loading ─────────────────────────────────────────────────────────
     def _load_models(self):
+        """Initial model load on startup."""
+        self._refresh_models(keep_selection=False)
+        self._schedule_model_auto_refresh()
+
+    def _refresh_models(self, keep_selection=True, done_cb=None):
+        """Re-query Ollama live. Safe to call anytime — runs in a background thread."""
         def fetch():
             models = []
             if OLLAMA_OK and OllamaBackend.is_running():
@@ -447,8 +640,17 @@ class ClawApp(ctk.CTk):
             has_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
             if GEMINI_OK and has_key:
                 models.append("gemini")
-            self.after(0, self.sidebar.set_models, models)
+            self.after(0, lambda m=models, ks=keep_selection: self.sidebar.set_models(m, keep_selection=ks))
+            if done_cb:
+                self.after(0, done_cb)
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _schedule_model_auto_refresh(self):
+        """Auto-refresh every 30 s so newly pulled models appear automatically."""
+        def auto_refresh():
+            self._refresh_models(keep_selection=True)      # silent, keeps current model
+            self.after(30_000, auto_refresh)               # schedule next tick
+        self.after(30_000, auto_refresh)
 
     def _on_model_change(self, model):
         if self.agent:
@@ -456,6 +658,9 @@ class ClawApp(ctk.CTk):
             self._old_messages = list(self.agent.messages)
             self._old_turns = self.agent.turn_count
         self.agent = None   # force recreate on next send
+        # Immediately reflect the new model name in the STATUS panel
+        self.sidebar.s_model.configure(text=model.split("/")[-1][:22])
+        self.sidebar.update_status(busy=self.busy)
 
     def _ensure_agent(self, model):
         if self.agent is None:
@@ -488,6 +693,7 @@ class ClawApp(ctk.CTk):
         if not text:
             return
         self.input_box.delete("1.0", "end")
+        self.input_box.configure(height=48)   # reset height after send
         model = self.sidebar.model_var.get()
         self.chat.append_user(text)
         self._set_busy(True)
@@ -537,7 +743,7 @@ class ClawApp(ctk.CTk):
 
                 elif t == "done":
                     content = ev.get("content", "(no response)")
-                    if self.chat._streaming_lbl:
+                    if self.chat._streaming_box:
                         self.chat.finalize_streaming(content)
                     else:
                         self.chat.append_assistant(content)
@@ -552,6 +758,18 @@ class ClawApp(ctk.CTk):
         self.after(50, self._poll_events)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
+    def _auto_grow_input(self, event=None):
+        """Grow the input box up to 5 lines, shrink when text is deleted."""
+        line_h = 22   # approx px per line given font size 13
+        padding = 12
+        max_lines = 5
+        # Count actual lines in the widget
+        content = self.input_box.get("1.0", "end-1c")
+        lines = content.count("\n") + 1
+        new_h = min(max_lines, max(1, lines)) * line_h + padding
+        new_h = max(new_h, 48)          # minimum height
+        self.input_box.configure(height=new_h)
+
     def _set_busy(self, b):
         self.busy = b
         self.send_btn.configure(state="disabled" if b else "normal")
