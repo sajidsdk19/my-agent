@@ -1046,7 +1046,7 @@ class ClawApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Sidebar
+        # ── Sidebar (fixed left column)
         self.sidebar = Sidebar(
             self,
             on_model_change=self._on_model_change,
@@ -1056,29 +1056,49 @@ class ClawApp(ctk.CTk):
         )
         self.sidebar.grid(row=0, column=0, sticky="nsew")
 
-        # Right pane
-        right = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(1, weight=1)
-        right.grid_columnconfigure(0, weight=1)
+        # ── Resizable PanedWindow: Explorer | CodeViewer | Chat
+        self._paned = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL,
+            bg=BORDER, sashwidth=5, sashpad=0,
+            relief="flat", bd=0,
+        )
+        self._paned.grid(row=0, column=1, sticky="nsew")
+
+        # Pane 1: File Explorer
+        self.explorer = FileExplorer(self._paned, on_open_file=self._open_file)
+        self._paned.add(self.explorer, minsize=160, width=220)
+
+        # Pane 2: Code Viewer
+        self.code_viewer = CodeViewer(
+            self._paned,
+            on_review=self._review_file,
+            on_revamp=self._revamp_file,
+        )
+        self._paned.add(self.code_viewer, minsize=240, width=560)
+
+        # Pane 3: Chat
+        chat_pane = ctk.CTkFrame(self._paned, fg_color=BG, corner_radius=0)
+        self._paned.add(chat_pane, minsize=300)
+        chat_pane.grid_rowconfigure(1, weight=1)
+        chat_pane.grid_columnconfigure(0, weight=1)
 
         # Header bar
-        hdr = ctk.CTkFrame(right, fg_color=SURF, height=50, corner_radius=0)
+        hdr = ctk.CTkFrame(chat_pane, fg_color=SURF, height=50, corner_radius=0)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_columnconfigure(0, weight=1)
         hdr.grid_propagate(False)
-        ctk.CTkLabel(hdr, text="🦞 Claw Agent", font=F_TITLE,
+        ctk.CTkLabel(hdr, text="🦞 Claw Agent — IDE", font=F_TITLE,
                      text_color=TEXT).grid(row=0, column=0, padx=20, pady=13, sticky="w")
         self.status_lbl = ctk.CTkLabel(hdr, text="● Idle", font=F_SMALL,
                                        text_color=GREEN)
         self.status_lbl.grid(row=0, column=1, padx=20, pady=13, sticky="e")
 
         # Chat area
-        self.chat = ChatArea(right)
+        self.chat = ChatArea(chat_pane)
         self.chat.grid(row=1, column=0, sticky="nsew")
 
-        # Input area — auto-grows with content
-        self.inp_frame = ctk.CTkFrame(right, fg_color=SURF, corner_radius=0)
+        # Input area
+        self.inp_frame = ctk.CTkFrame(chat_pane, fg_color=SURF, corner_radius=0)
         self.inp_frame.grid(row=2, column=0, sticky="ew")
         self.inp_frame.grid_columnconfigure(0, weight=1)
 
@@ -1092,7 +1112,7 @@ class ClawApp(ctk.CTk):
         )
         self.input_box.grid(row=0, column=0, padx=(14, 6), pady=6, sticky="ew")
         self.input_box.bind("<Return>", self._on_enter)
-        self.input_box.bind("<Shift-Return>", lambda e: None)  # allow native newline
+        self.input_box.bind("<Shift-Return>", lambda e: None)
         self.input_box.bind("<KeyRelease>", self._auto_grow_input)
 
         self.send_btn = ctk.CTkButton(
