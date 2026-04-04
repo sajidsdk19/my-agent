@@ -198,9 +198,15 @@ def api_status():
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("\n  🦞  Claw Agent Web UI")
-    print("  Open → http://localhost:5000")
-    print("  Author : Sajid Khan · CTO TechScape")
-    print("  Web    : https://sajidkhan.me")
-    print("  GitHub : https://github.com/sajidsdk19\n")
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=5000,
+                        help="Port to run Flask on (default 5000; Electron uses 5001)")
+    args = parser.parse_args()
+
+    print(f"\n  🦞  Claw Agent Web UI")
+    print(f"  Open → http://localhost:{args.port}")
+    print(f"  Author : Sajid Khan · CTO TechScape")
+    print(f"  Web    : https://sajidkhan.me")
+    print(f"  GitHub : https://github.com/sajidsdk19\n")
+    app.run(host="0.0.0.0", port=args.port, debug=False, threaded=True)

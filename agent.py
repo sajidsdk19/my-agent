@@ -768,6 +768,98 @@ class GeminiBackend:
                 })
         return {"content": content_text, "tool_calls": tool_calls}
 
+    def chat_streaming(self, messages: list, tools: list, on_token=None) -> dict:
+        """Like chat() but streams text tokens via on_token callback (Gemini streaming)."""
+        if on_token is None:
+            return self.chat(messages, tools)
+
+        from google.genai import types as genai_types
+
+        # Separate system prompt
+        system_text = None
+        history = []
+        for m in messages:
+            role = m["role"]
+            content = m.get("content") or ""
+            if role == "system":
+                system_text = content
+            elif role in ("tool",):
+                history.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=f"[Tool result]\n{content}")],
+                ))
+            elif role == "assistant":
+                history.append(genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text=content)],
+                ))
+            else:
+                history.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=content)],
+                ))
+
+        # Build tool declarations
+        fn_decls = []
+        for spec in tools:
+            fn = spec["function"]
+            props = {}
+            for pname, pinfo in fn.get("parameters", {}).get("properties", {}).items():
+                props[pname] = genai_types.Schema(
+                    type=genai_types.Type.STRING,
+                    description=pinfo.get("description", ""),
+                )
+            fn_decls.append(genai_types.FunctionDeclaration(
+                name=fn["name"],
+                description=fn.get("description", ""),
+                parameters=genai_types.Schema(
+                    type=genai_types.Type.OBJECT,
+                    properties=props,
+                    required=fn.get("parameters", {}).get("required", []),
+                ),
+            ))
+
+        cfg = genai_types.GenerateContentConfig(
+            system_instruction=system_text,
+            tools=[genai_types.Tool(function_declarations=fn_decls)] if fn_decls else [],
+        )
+
+        content_parts = []
+        tool_calls = []
+        first_token_sent = False
+
+        try:
+            stream = self._client.models.generate_content_stream(
+                model=self.model_name,
+                contents=history,
+                config=cfg,
+            )
+            for chunk in stream:
+                if not chunk.candidates:
+                    continue
+                for part in chunk.candidates[0].content.parts:
+                    tok = getattr(part, "text", None)
+                    if tok:
+                        if not first_token_sent:
+                            first_token_sent = True
+                        content_parts.append(tok)
+                        on_token(tok)
+                    fc = getattr(part, "function_call", None)
+                    if fc and getattr(fc, "name", None):
+                        tool_calls.append({
+                            "id": f"call_{len(tool_calls)}",
+                            "name": fc.name,
+                            "arguments": dict(fc.args) if fc.args else {},
+                        })
+        except Exception:
+            # Fallback to non-streaming
+            return self.chat(messages, tools)
+
+        return {
+            "content": "".join(content_parts) or None,
+            "tool_calls": tool_calls,
+        }
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  AGENT LOOP
