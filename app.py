@@ -3,6 +3,10 @@
 Flask web server for Claw Agent.
 Run:  python app.py
 Then open: http://localhost:5000
+
+Author  : Sajid Khan  –  CTO, TechScape
+Website : https://sajidkhan.me
+GitHub  : https://github.com/sajidsdk19
 """
 
 import sys
@@ -195,5 +199,8 @@ def api_status():
 
 if __name__ == "__main__":
     print("\n  🦞  Claw Agent Web UI")
-    print("  Open → http://localhost:5000\n")
+    print("  Open → http://localhost:5000")
+    print("  Author : Sajid Khan · CTO TechScape")
+    print("  Web    : https://sajidkhan.me")
+    print("  GitHub : https://github.com/sajidsdk19\n")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

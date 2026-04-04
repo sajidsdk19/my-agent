@@ -4,6 +4,10 @@ Claw Agent — Windows Desktop Application
 Powered by CustomTkinter. Talks directly to the Agent class (no browser needed).
 
 Run:  python desktop_app.py
+
+Author  : Sajid Khan  –  CTO, TechScape
+Website : https://sajidkhan.me
+GitHub  : https://github.com/sajidsdk19
 """
 import sys
 import os
@@ -148,9 +152,14 @@ class Sidebar(ctk.CTkFrame):
 
         # Spacer + footer
         self.grid_rowconfigure(r, weight=1); r += 1
-        ctk.CTkLabel(self, text="Built on Claw Code architecture",
-                     font=("Inter", 9), text_color=DIM
-                     ).grid(row=r, column=0, padx=16, pady=(0, 14), sticky="s")
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=r, column=0, padx=16, pady=(0, 14), sticky="s")
+        ctk.CTkLabel(footer, text="Built on Claw Code architecture",
+                     font=("Inter", 9), text_color=DIM).pack(anchor="center")
+        ctk.CTkLabel(footer, text="✦  Sajid Khan · CTO TechScape",
+                     font=("Inter", 9, "bold"), text_color=ACCENT).pack(anchor="center")
+        ctk.CTkLabel(footer, text="sajidkhan.me  ·  github.com/sajidsdk19",
+                     font=("Inter", 8), text_color=MUTED).pack(anchor="center")
 
     def _sep(self, row):
         ctk.CTkFrame(self, height=1, fg_color=BORDER
