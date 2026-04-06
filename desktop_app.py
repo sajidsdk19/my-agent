@@ -145,7 +145,9 @@ class Sidebar(ctk.CTkFrame):
 
         # CWD
         self._section_label("WORKING DIR", r); r += 1
-        self.cwd_lbl = ctk.CTkLabel(self, text=str(Path.cwd()),
+        # Default to Desktop; will be updated by explorer callbacks
+        _default_cwd = str(Path.home() / "Desktop")
+        self.cwd_lbl = ctk.CTkLabel(self, text=_default_cwd,
                                     font=("JetBrains Mono", 9), text_color=MUTED,
                                     wraplength=232, justify="left", anchor="w")
         self.cwd_lbl.grid(row=r, column=0, padx=16, pady=(0, 12), sticky="w"); r += 1
@@ -227,9 +229,10 @@ class Sidebar(ctk.CTkFrame):
 class FileExplorer(ctk.CTkFrame):
     """Left-side file tree panel."""
 
-    def __init__(self, master, on_open_file, **kw):
+    def __init__(self, master, on_open_file, on_cwd_change=None, **kw):
         super().__init__(master, fg_color=SURF, corner_radius=0, **kw)
         self.on_open_file = on_open_file   # callback(path: Path)
+        self.on_cwd_change = on_cwd_change # callback(path: Path) — called when CWD changes
         self._root_path: Path | None = None
         self._expanded: set[Path] = set()
         self._build()
@@ -287,6 +290,9 @@ class FileExplorer(ctk.CTkFrame):
         self._root_path = path
         self._expanded = {path}
         self._refresh_tree()
+        # Notify app of CWD change
+        if self.on_cwd_change:
+            self.on_cwd_change(path)
 
     # ── Tree rendering
     def _refresh_tree(self):
@@ -399,7 +405,11 @@ class FileExplorer(ctk.CTkFrame):
         try:
             p.mkdir(parents=True, exist_ok=True)
             self._expanded.add(parent)
+            self._expanded.add(p)
             self._refresh_tree()
+            # Notify app: CWD moves into the newly created folder
+            if self.on_cwd_change:
+                self.on_cwd_change(p)
         except Exception as exc:
             messagebox.showerror("Error", str(exc), parent=self)
 
@@ -1310,6 +1320,14 @@ class ClawApp(ctk.CTk):
         self.busy        = False
         self._cur_pill   = None
 
+        # Set default working directory to Desktop
+        _desktop = Path.home() / "Desktop"
+        if _desktop.exists():
+            os.chdir(_desktop)
+            self._cwd = _desktop
+        else:
+            self._cwd = Path.cwd()
+
         self._build_layout()
         self._load_models()
         self.after(80, self._poll_events)
@@ -1338,7 +1356,11 @@ class ClawApp(ctk.CTk):
         self._paned.grid(row=0, column=1, sticky="nsew")
 
         # Pane 1: File Explorer
-        self.explorer = FileExplorer(self._paned, on_open_file=self._open_file)
+        self.explorer = FileExplorer(
+            self._paned,
+            on_open_file=self._open_file,
+            on_cwd_change=self._on_cwd_change,
+        )
         self._paned.add(self.explorer, minsize=160, width=220)
 
         # Pane 2: Code Viewer
@@ -1599,15 +1621,21 @@ class ClawApp(ctk.CTk):
         self.chat.append_assistant(f"✅ Session saved to:\n{path}")
 
     # ── IDE helpers ────────────────────────────────────────────────────────────────
+    def _on_cwd_change(self, path: Path):
+        """Called whenever the working directory changes (open folder / create folder)."""
+        self._cwd = path
+        os.chdir(path)
+        import agent as _agent_mod
+        _agent_mod.CWD = path
+        self.sidebar.cwd_lbl.configure(text=str(path))
+
     def _open_file(self, path: Path):
         """Open a file in the code viewer. Updates context bar and agent CWD hint."""
         self.code_viewer.open_file(path)
         # Update context bar
         self._ctx_file_lbl.configure(text=f"📄 {path.name}  —  {path.parent}")
         # Sync agent working dir so AI can read_file / write_file with relative paths
-        import agent as _agent_mod
-        _agent_mod.CWD = path.parent
-        self.sidebar.cwd_lbl.configure(text=str(path.parent))
+        self._on_cwd_change(path.parent)
 
     def _inject_context(self):
         """
