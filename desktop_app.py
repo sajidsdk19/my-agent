@@ -1054,8 +1054,13 @@ class ChatArea(ctk.CTkScrollableFrame):
         self._anim_step       = 0
         # Registry: list of (CTkTextbox, prepared_dict) for live height updates
         self._bubble_registry: list[tuple] = []
+        self._scroll_pending = False
         self._show_welcome()
         self.bind("<Configure>", self._on_resize)
+        # Ensure the outer frame itself scrolls on mousewheel
+        self.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self.bind("<Button-4>",   self._on_mousewheel, add="+")
+        self.bind("<Button-5>",   self._on_mousewheel, add="+")
 
     # ── Resize handler — recompute every bubble height+width (pure arithmetic) ───
     def _on_resize(self, event=None):
@@ -1083,6 +1088,37 @@ class ChatArea(ctk.CTkScrollableFrame):
     def _bubble_text_width(self) -> int:
         return self._calc_text_width()
 
+    # ── Mousewheel redirect ───────────────────────────────────────────
+    def _on_mousewheel(self, event):
+        """Scroll the chat canvas regardless of which child widget the cursor is over."""
+        try:
+            canvas = self._parent_canvas
+            if not canvas or not canvas.winfo_exists():
+                return
+            if hasattr(event, 'num') and event.num in (4, 5):
+                canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+            elif hasattr(event, 'delta') and event.delta:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
+
+    def _bind_scroll(self, widget):
+        """Recursively redirect wheel events on widget and its CTK internals."""
+        try:
+            widget.bind("<MouseWheel>", self._on_mousewheel, add="+")
+            widget.bind("<Button-4>",   self._on_mousewheel, add="+")
+            widget.bind("<Button-5>",   self._on_mousewheel, add="+")
+            # CTkTextbox wraps a real tk.Text widget — bind that too
+            if hasattr(widget, "_textbox"):
+                widget._textbox.bind("<MouseWheel>", self._on_mousewheel, add="+")
+                widget._textbox.bind("<Button-4>",   self._on_mousewheel, add="+")
+                widget._textbox.bind("<Button-5>",   self._on_mousewheel, add="+")
+            # Recurse into CTK children
+            for child in widget.winfo_children():
+                self._bind_scroll(child)
+        except Exception:
+            pass
+
     def _make_bubble_box(self, parent, text: str,
                          fg: str, text_color: str) -> ctk.CTkTextbox:
         """
@@ -1104,6 +1140,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         )
         box.insert("1.0", text)
         box.configure(state="disabled")
+        self._bind_scroll(box)   # redirect wheel events so chat stays scrollable
         self._bubble_registry.append((box, prep))
         return box
 
@@ -1129,7 +1166,26 @@ class ChatArea(ctk.CTkScrollableFrame):
         r = self._row; self._row += 1; return r
 
     def _scroll_bottom(self):
-        self.after(60, lambda: self._parent_canvas.yview_moveto(1.0))
+        """Debounced scroll-to-bottom. At most ONE pending callback at a time.
+        Uncaught exceptions inside an after() lambda kill Tkinter’s loop —
+        so we guard with try/except inside the scheduled function.
+        """
+        if getattr(self, "_scroll_pending", False):
+            return   # already one in flight — don’t stack more
+        self._scroll_pending = True
+
+        def _do_scroll():
+            self._scroll_pending = False
+            try:
+                canvas = self._parent_canvas
+                if canvas and canvas.winfo_exists():
+                    # Refresh scroll region first so new widgets are included
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                    canvas.yview_moveto(1.0)
+            except Exception:
+                pass  # CTK internal state change — safe to ignore
+
+        self.after(80, _do_scroll)
 
     # ── User bubble ──────────────────────────────────────────────────────────
     def append_user(self, text):
@@ -1137,6 +1193,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 10))
         wrap.grid_columnconfigure(0, weight=1)
+        self._bind_scroll(wrap)
         ctk.CTkLabel(wrap, text="You", font=("Inter", 10, "bold"),
                      text_color=ACCENT).grid(row=0, column=0, sticky="e", padx=(0, 6))
         box = self._make_bubble_box(wrap, text,
@@ -1185,6 +1242,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 10))
         wrap.grid_columnconfigure(0, weight=1)
+        self._bind_scroll(wrap)
         ctk.CTkLabel(wrap, text="Claw", font=("Inter", 10, "bold"),
                      text_color="#7a5ccc").grid(row=0, column=0, sticky="w", padx=(4, 0))
         # Start with correct width + single-line height; grows token by token
@@ -1197,18 +1255,22 @@ class ChatArea(ctk.CTkScrollableFrame):
             activate_scrollbars=False,
         )
         self._streaming_box.grid(row=1, column=0, sticky="ew")
+        self._bind_scroll(self._streaming_box)  # streaming box intercepts wheel too
         self._streaming_prep  = None
         self._streaming_text  = ""
 
     def append_token(self, tok):
+        """Append one (possibly multi-token batched) chunk to the streaming bubble."""
         self._streaming_text += tok
+        self._streaming_tok_count = getattr(self, "_streaming_tok_count", 0) + 1
         if self._streaming_box and self._streaming_box.winfo_exists():
             box = self._streaming_box
             box.configure(state="normal")
             box.delete("1.0", "end")
             box.insert("1.0", self._streaming_text)
             box.configure(state="disabled")
-            # Recompute height+width on every token using TextMeasurer
+            # Recompute height on every call — safe because the poll loop
+            # already batches all tokens into ONE call per 50 ms tick.
             prep   = TextMeasurer.prepare(self._streaming_text, "Inter", 13)
             text_w = self._bubble_text_width()
             h      = TextMeasurer.layout(prep, text_w, pad_v=self._TEXT_PAD_V)
@@ -1231,6 +1293,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         self._streaming_box  = None
         self._streaming_prep = None
         self._streaming_text = ""
+        self._streaming_tok_count = 0
         self._scroll_bottom()
 
     # ── Assistant final bubble (non-streaming) ───────────────────────────────
@@ -1239,6 +1302,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 10))
         wrap.grid_columnconfigure(0, weight=1)
+        self._bind_scroll(wrap)
         ctk.CTkLabel(wrap, text="Claw", font=("Inter", 10, "bold"),
                      text_color="#7a5ccc").grid(row=0, column=0, sticky="w", padx=(4, 0))
         box = self._make_bubble_box(wrap, text, fg=S2, text_color=TEXT)
@@ -1253,6 +1317,7 @@ class ChatArea(ctk.CTkScrollableFrame):
                             border_width=1, border_color=BORDER)
         card.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 5))
         card.grid_columnconfigure(2, weight=1)
+        self._bind_scroll(card)
         ctk.CTkLabel(card, text=icon, font=("Inter", 14)
                      ).grid(row=0, column=0, padx=(10, 5), pady=8, sticky="w")
         ctk.CTkLabel(card, text=name, font=("JetBrains Mono", 11, "bold"),
@@ -1278,6 +1343,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.grid(row=self._next(), column=0, sticky="ew", padx=20, pady=(0, 8))
         wrap.grid_columnconfigure(0, weight=1)
+        self._bind_scroll(wrap)
         box = self._make_bubble_box(wrap, full, fg="#1a0808", text_color=RED)
         box.grid(row=0, column=0, sticky="ew")
         self._scroll_bottom()
@@ -1291,6 +1357,7 @@ class ChatArea(ctk.CTkScrollableFrame):
         self._streaming_box   = None
         self._streaming_prep  = None
         self._streaming_text  = ""
+        self._streaming_tok_count = 0
         self._bubble_registry = []
         self._show_welcome()
 
@@ -1531,15 +1598,34 @@ class ClawApp(ctk.CTk):
     # ── Poll event queue every 50 ms ──────────────────────────────────────────
     def _poll_events(self):
         try:
-            while True:
-                ev = self.event_queue.get_nowait()
+            MAX_EVENTS = 50          # cap per tick — keep UI responsive
+            pending_tokens = []      # batch consecutive token events
 
-                if ev is None:                          # sentinel
+            for _ in range(MAX_EVENTS):
+                try:
+                    ev = self.event_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                if ev is None:       # sentinel — flush tokens first
+                    if pending_tokens:
+                        self.chat.append_token("".join(pending_tokens))
+                        pending_tokens = []
                     self._set_busy(False)
                     self.sidebar.update_status(self.agent, busy=False)
                     break
 
                 t = ev.get("type")
+
+                if t == "token":
+                    # Accumulate; render once at end of batch
+                    pending_tokens.append(ev["token"])
+                    continue
+                else:
+                    # Flush any pending tokens before handling non-token event
+                    if pending_tokens:
+                        self.chat.append_token("".join(pending_tokens))
+                        pending_tokens = []
 
                 if t == "thinking":
                     self.chat.show_thinking()
@@ -1548,13 +1634,9 @@ class ClawApp(ctk.CTk):
                     self.chat.start_streaming()
                     self.status_lbl.configure(text="● Streaming…", text_color=CYAN)
 
-                elif t == "token":
-                    self.chat.append_token(ev["token"])
-
                 elif t == "tool_call":
                     self.chat.remove_thinking()
                     self._cur_pill = self.chat.append_tool_card(ev["name"], ev["args"])
-                    # Remember if agent is writing a file
                     if ev["name"] in ("write_file", "edit_file"):
                         self._last_written_path = ev["args"].get("path")
 
@@ -1562,7 +1644,6 @@ class ClawApp(ctk.CTk):
                     if self._cur_pill:
                         self.chat.update_tool_card(self._cur_pill)
                         self._cur_pill = None
-                    # Auto-reload if agent wrote a currently-open file
                     if hasattr(self, "_last_written_path") and self._last_written_path:
                         self.code_viewer.reload_file(Path(self._last_written_path))
                         self.explorer._refresh_tree()
@@ -1579,10 +1660,14 @@ class ClawApp(ctk.CTk):
                     self.chat.append_error(ev.get("message", "Unknown error"))
                     self._set_busy(False)
 
-        except queue.Empty:
-            pass
+            # Flush any leftover batched tokens at end of tick
+            if pending_tokens:
+                self.chat.append_token("".join(pending_tokens))
 
-        self.after(50, self._poll_events)
+        except Exception:
+            pass  # never let an unexpected error kill the poll loop
+        finally:
+            self.after(50, self._poll_events)  # ALWAYS reschedule
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _auto_grow_input(self, event=None):
